@@ -15,9 +15,9 @@ ANTHROPIC_BASE_URL=http://localhost:8484
 
 ## Status
 
-Scaffold (M1). Server boots and serves `/api/health`. See [`plans/`](plans/) for
-the full build plan and [`docs/research/`](docs/research/) for how the reference
-projects work.
+Bun server, SQLite persistence, account/OAuth APIs, Anthropic proxy failover, tRPC
+dashboard, Docker, and CI are implemented. See [`plans/`](plans/) and
+[`docs/research/`](docs/research/) for the design notes behind the implementation.
 
 ## Add accounts (planned)
 
@@ -29,9 +29,12 @@ Two ways, from the dashboard:
 
 ```sh
 bun install
+bun run build                # builds React dashboard into public/
 bun run dev                  # server on :8484
-cd frontend && bun run dev   # dashboard on :5173 (proxies /api + /v1)
 ```
+
+The dashboard is built with Bun and Tailwind CLI from `frontend/` source files;
+there is no Vite project or nested frontend package.
 
 ## Run (Docker)
 
@@ -52,7 +55,7 @@ without setting `DASHBOARD_PASSWORD` and/or keeping it on a private network. The
 
 ```
 src/        Bun server (proxy + REST API)
-frontend/   Vite + React 19 + Tailwind v4 + shadcn dashboard
+frontend/   Bun-built React 19 + Tailwind v4 + shadcn dashboard
 plans/      implementation plan (start at plans/00-overview.md)
 docs/       research on better-ccflare & codex-lb
 ```

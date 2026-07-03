@@ -1,0 +1,43 @@
+import { OAUTH_BETA_HEADER } from "./constants";
+
+/**
+ * Rewrite client request headers for forwarding to Anthropic with our OAuth token.
+ * Mirrors better-ccflare's AnthropicProvider.prepareHeaders.
+ */
+export function prepareRequestHeaders(incoming: Headers, accessToken: string): Headers {
+  const h = new Headers(incoming);
+
+  // Strip client credentials — we inject our own.
+  h.delete("authorization");
+  h.delete("x-api-key");
+
+  h.set("authorization", `Bearer ${accessToken}`);
+
+  // Ensure the OAuth beta flag is present.
+  const beta = h.get("anthropic-beta");
+  if (beta) {
+    if (!beta.split(",").map((s) => s.trim()).includes(OAUTH_BETA_HEADER)) {
+      h.set("anthropic-beta", `${beta},${OAUTH_BETA_HEADER}`);
+    }
+  } else {
+    h.set("anthropic-beta", OAUTH_BETA_HEADER);
+  }
+
+  // Hop-by-hop / host.
+  h.delete("host");
+  h.delete("content-length"); // recomputed by fetch from the body
+
+  return h;
+}
+
+/**
+ * Sanitize upstream response headers before forwarding to the client.
+ * Bun already decompressed the body, so leaving content-encoding causes ZlibError.
+ */
+export function sanitizeResponseHeaders(upstream: Headers): Headers {
+  const h = new Headers(upstream);
+  h.delete("content-encoding");
+  h.delete("content-length");
+  h.delete("transfer-encoding");
+  return h;
+}

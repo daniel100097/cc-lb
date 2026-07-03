@@ -1,0 +1,13 @@
+services:
+  cc-lb:
+    image: ghcr.io/OWNER/cc-lb:latest
+    build: .
+    ports:
+      - "8484:8484"
+    volumes:
+      - ./data:/app/data
+    environment:
+      PORT: "8484"
+      DB_PATH: /app/data/cc-lb.db
+      # DASHBOARD_PASSWORD: changeme
+    restart: unless-stopped
