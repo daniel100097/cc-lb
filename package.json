@@ -1,0 +1,18 @@
+{
+  "name": "cc-lb",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "cd frontend && bun install && bun run build",
+    "healthcheck": "bun src/healthcheck.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
