@@ -1,5 +1,5 @@
 import type { FormEvent, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import type { inferRouterOutputs } from "@trpc/server";
 import {
@@ -18,6 +18,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  Search,
   ShieldAlert,
   Sun,
   Trash2,
@@ -26,6 +27,7 @@ import {
 import { toast } from "sonner";
 import { AlertMessage } from "@/components/alert-message";
 import { CopyButton } from "@/components/copy-button";
+import { EmptyState } from "@/components/empty-state";
 import { MiniQuotaBar } from "@/components/mini-quota-bar";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -43,7 +45,7 @@ import { Label } from "@/components/ui/label";
 import { Toaster } from "@/components/ui/sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { compactNumber, durationMs, relativeTime } from "@/lib/format";
+import { compactNumber, currency, durationMs, latencyMs, relativeTime } from "@/lib/format";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -54,6 +56,7 @@ import type { AppRouter } from "../../src/api/router";
 type RouterOutput = inferRouterOutputs<AppRouter>;
 type Account = RouterOutput["accounts"]["list"][number];
 type SettingsValue = RouterOutput["settings"]["get"];
+type RequestEntry = RouterOutput["requests"]["list"]["entries"][number];
 type NumberSettingsKey =
   | "stickyTtlMs"
   | "rateLimitBackoffBaseMs"
@@ -72,8 +75,13 @@ const strategyNameSet = new Set<string>([
 const navItems = [
   { href: "/", label: "Dashboard" },
   { href: "/accounts", label: "Accounts" },
+  { href: "/requests", label: "Requests" },
   { href: "/settings", label: "Settings" },
 ];
+
+const REQUEST_PAGE_SIZE = 25;
+type RequestTimeframe = "1h" | "24h" | "7d" | "all";
+const REQUEST_TIMEFRAMES: RequestTimeframe[] = ["1h", "24h", "7d", "all"];
 
 export function App() {
   const initializeTheme = useThemeStore((state) => state.initializeTheme);
@@ -89,6 +97,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
+          <Route path="/requests" element={<RequestsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
@@ -233,6 +242,147 @@ function AccountsPage() {
   );
 }
 
+function RequestsPage() {
+  const [accountId, setAccountId] = useState("all");
+  const [outcome, setOutcome] = useState("all");
+  const [model, setModel] = useState("all");
+  const [timeframe, setTimeframe] = useState<RequestTimeframe>("24h");
+  const [search, setSearch] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const options = trpc.requests.options.useQuery();
+
+  const input = useMemo(
+    () => ({
+      limit: REQUEST_PAGE_SIZE,
+      offset,
+      accountId: accountId === "all" ? null : accountId,
+      outcome: outcome === "all" ? null : outcome,
+      model: model === "all" ? null : model,
+      since: sinceForTimeframe(timeframe),
+      search: search.trim() || null,
+    }),
+    [accountId, model, offset, outcome, search, timeframe],
+  );
+
+  const requests = trpc.requests.list.useQuery(input, {
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
+  });
+
+  function resetPaging() {
+    setOffset(0);
+    setExpandedId(null);
+  }
+
+  return (
+    <div className="animate-fade-in-up flex flex-col gap-6">
+      <PageHeading title="Requests" description="Recent proxy attempts, failover context, token usage, and latency." />
+      <section className="rounded-xl border bg-card p-4">
+        <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1fr_auto]">
+          <FilterSelect
+            label="Account"
+            value={accountId}
+            onChange={(value) => {
+              setAccountId(value);
+              resetPaging();
+            }}
+            options={[
+              { value: "all", label: "All accounts" },
+              ...(options.data?.accounts ?? []).map((account) => ({ value: account.id, label: account.name })),
+            ]}
+          />
+          <FilterSelect
+            label="Outcome"
+            value={outcome}
+            onChange={(value) => {
+              setOutcome(value);
+              resetPaging();
+            }}
+            options={[
+              { value: "all", label: "All outcomes" },
+              ...(options.data?.outcomes ?? []).map((item) => ({ value: item, label: labelFromKey(item) })),
+            ]}
+          />
+          <FilterSelect
+            label="Model"
+            value={model}
+            onChange={(value) => {
+              setModel(value);
+              resetPaging();
+            }}
+            options={[
+              { value: "all", label: "All models" },
+              ...(options.data?.models ?? []).map((item) => ({ value: item, label: item })),
+            ]}
+          />
+          <div className="grid gap-2">
+            <Label>Window</Label>
+            <div className="flex rounded-md border p-1">
+              {REQUEST_TIMEFRAMES.map((value) => (
+                <Button
+                  key={value}
+                  type="button"
+                  size="sm"
+                  variant={timeframe === value ? "secondary" : "ghost"}
+                  onClick={() => {
+                    setTimeframe(value);
+                    resetPaging();
+                  }}
+                  className="h-7 flex-1 px-2"
+                >
+                  {value}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div className="grid gap-2 lg:col-span-4">
+            <Label htmlFor="request-search">Search</Label>
+            <div className="relative">
+              <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
+              <Input
+                id="request-search"
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  resetPaging();
+                }}
+                className="pl-9"
+                placeholder="Path, model, or error"
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+      <section className="rounded-xl border bg-card p-4">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="font-semibold">Request log</h2>
+            <p className="text-muted-foreground mt-1 text-sm">{requests.data?.total ?? 0} matching attempts</p>
+          </div>
+          {requests.isFetching ? <Loader2 className="text-muted-foreground size-4 animate-spin" /> : null}
+        </div>
+        <RequestsTable
+          entries={requests.data?.entries ?? []}
+          expandedId={expandedId}
+          onToggle={(id) => setExpandedId((current) => (current === id ? null : id))}
+        />
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <Button type="button" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - REQUEST_PAGE_SIZE))}>
+            Previous
+          </Button>
+          <span className="text-muted-foreground text-xs">
+            {offset + 1}-{offset + (requests.data?.entries.length ?? 0)} of {requests.data?.total ?? 0}
+          </span>
+          <Button type="button" variant="outline" disabled={!requests.data?.hasMore} onClick={() => setOffset(offset + REQUEST_PAGE_SIZE)}>
+            Next
+          </Button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function SettingsPage() {
   const settings = trpc.settings.get.useQuery();
   const strategies = trpc.strategies.useQuery();
@@ -288,11 +438,11 @@ function StatCard({ icon, label, value }: { icon: ReactNode; label: string; valu
 function AccountsTable({ accounts, compact = false }: { accounts: Account[]; compact?: boolean }) {
   if (accounts.length === 0) {
     return (
-      <div className="flex min-h-48 flex-col items-center justify-center rounded-lg border border-dashed p-6 text-center">
-        <KeyRound className="text-muted-foreground mb-3 size-8" />
-        <p className="font-medium">No accounts yet</p>
-        <p className="text-muted-foreground mt-1 max-w-md text-sm">Add a Claude credentials JSON or complete the OAuth flow to start balancing requests.</p>
-      </div>
+      <EmptyState
+        icon={<KeyRound />}
+        title="No accounts yet"
+        description="Add a Claude credentials JSON or complete the OAuth flow to start balancing requests."
+      />
     );
   }
 
@@ -317,6 +467,129 @@ function AccountsTable({ accounts, compact = false }: { accounts: Account[]; com
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="grid gap-2">
+      <Label>{label}</Label>
+      <select
+        className="border-input bg-background h-9 rounded-md border px-3 text-sm"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function RequestsTable({
+  entries,
+  expandedId,
+  onToggle,
+}: {
+  entries: RequestEntry[];
+  expandedId: number | null;
+  onToggle: (id: number) => void;
+}) {
+  const blurNames = usePrivacyStore((state) => state.blurNames);
+
+  if (entries.length === 0) {
+    return (
+      <EmptyState
+        icon={<Activity />}
+        title="No requests found"
+        description="Proxy attempts will appear here after Claude Code sends traffic through CC-LB."
+      />
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[1100px] text-left">
+        <thead className="text-muted-foreground border-b text-xs uppercase">
+          <tr>
+            <th className="px-2 py-3 font-medium">Time</th>
+            <th className="px-2 py-3 font-medium">Account</th>
+            <th className="px-2 py-3 font-medium">Model</th>
+            <th className="px-2 py-3 font-medium">Outcome</th>
+            <th className="px-2 py-3 font-medium">HTTP</th>
+            <th className="px-2 py-3 font-medium">Tokens</th>
+            <th className="px-2 py-3 font-medium">Cost est.</th>
+            <th className="px-2 py-3 font-medium">Latency</th>
+            <th className="px-2 py-3 text-right font-medium">Attempt</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {entries.map((entry) => (
+            <Fragment key={entry.id}>
+              <tr className="cursor-pointer align-middle hover:bg-muted/40" onClick={() => onToggle(entry.id)}>
+                <td className="px-2 py-3">{relativeTime(entry.ts)}</td>
+                <td className="px-2 py-3">
+                  <span className={cn(blurNames && "privacy-blur")}>{entry.accountName ?? entry.accountId ?? "Local"}</span>
+                </td>
+                <td className="max-w-[260px] truncate px-2 py-3 text-xs">{entry.model ?? "-"}</td>
+                <td className="px-2 py-3">
+                  <StatusBadge status={entry.outcome} />
+                </td>
+                <td className="px-2 py-3">{entry.status ?? "-"}</td>
+                <td className="px-2 py-3">{tokenSummary(entry)}</td>
+                <td className="px-2 py-3">{currency(entry.costUsd)}</td>
+                <td className="px-2 py-3">{latencyMs(entry.latencyMs ?? entry.totalMs)}</td>
+                <td className="px-2 py-3 text-right">{entry.failoverAttempt > 0 ? entry.failoverAttempt : "-"}</td>
+              </tr>
+              {expandedId === entry.id ? (
+                <tr>
+                  <td className="bg-muted/30 px-2 py-3 text-xs" colSpan={9}>
+                    <RequestDetails entry={entry} />
+                  </td>
+                </tr>
+              ) : null}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RequestDetails({ entry }: { entry: RequestEntry }) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <DetailItem label="Path" value={`${entry.method ?? ""} ${entry.path ?? "-"}`.trim()} />
+      <DetailItem label="Upstream request" value={entry.upstreamRequestId ?? "-"} />
+      <DetailItem label="Total time" value={latencyMs(entry.totalMs)} />
+      <DetailItem
+        label="Cache tokens"
+        value={`read ${compactOptional(entry.cacheReadTokens)} / create ${compactOptional(entry.cacheCreationTokens)}`}
+      />
+      {entry.error ? <DetailItem className="sm:col-span-2 xl:col-span-4" label="Error" value={entry.error} /> : null}
+    </div>
+  );
+}
+
+function DetailItem({ label, value, className }: { label: string; value: string; className?: string }) {
+  return (
+    <div className={cn("rounded-md border bg-background px-3 py-2", className)}>
+      <div className="text-muted-foreground text-[11px] uppercase">{label}</div>
+      <div className="mt-1 break-all">{value}</div>
     </div>
   );
 }
@@ -750,6 +1023,30 @@ function SettingNumber({
       </span>
     </div>
   );
+}
+
+function sinceForTimeframe(timeframe: RequestTimeframe): number | null {
+  const now = Date.now();
+  if (timeframe === "1h") return now - 60 * 60 * 1000;
+  if (timeframe === "24h") return now - 24 * 60 * 60 * 1000;
+  if (timeframe === "7d") return now - 7 * 24 * 60 * 60 * 1000;
+  return null;
+}
+
+function tokenSummary(entry: RequestEntry): string {
+  if (entry.inputTokens === null && entry.outputTokens === null) return "-";
+  return `${compactOptional(entry.inputTokens)} in / ${compactOptional(entry.outputTokens)} out`;
+}
+
+function compactOptional(value: number | null): string {
+  return value === null ? "-" : compactNumber(value);
+}
+
+function labelFromKey(value: string): string {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 async function afterAccountAdded(utils: ReturnType<typeof trpc.useUtils>) {

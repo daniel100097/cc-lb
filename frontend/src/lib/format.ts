@@ -22,3 +22,18 @@ export function durationMs(value: number): string {
   const hours = Math.round(minutes / 60);
   return `${hours} hr`;
 }
+
+export function latencyMs(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "-";
+  if (value < 1000) return `${value} ms`;
+  return `${(value / 1000).toFixed(1)} s`;
+}
+
+export function currency(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "-";
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: value < 0.01 ? 5 : 3,
+  }).format(value);
+}

@@ -2,39 +2,35 @@
 
 ## Build model
 
-Two-stage Docker build: stage 1 builds the Vite frontend into `public/`, stage 2
+Two-stage Docker build: stage 1 builds the Bun/Tailwind frontend into `public/`, stage 2
 is the Bun runtime serving both proxy + static SPA. Single image, single port.
 
 ## Dockerfile (multi-stage)
 
 ```dockerfile
-# ---- frontend build ----
-FROM oven/bun:1 AS frontend
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/bun.lock ./
-RUN bun install --frozen-lockfile
-COPY frontend/ ./
-RUN bun run build            # vite build → ../public
-
-# ---- server deps ----
 FROM oven/bun:1 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production
+RUN bun install --frozen-lockfile
+
+FROM deps AS build
+WORKDIR /app
+COPY . .
+RUN bun run typecheck && bun run lint && bun run test && bun run build
 
 # ---- runtime ----
 FROM oven/bun:1-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production PORT=8484 DB_PATH=/app/data/cc-lb.db
-COPY --from=deps /app/node_modules ./node_modules
-COPY src/ ./src/
-COPY package.json ./
-COPY --from=frontend /app/public ./public
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
+COPY src ./src
+COPY --from=build /app/public ./public
 RUN mkdir -p /app/data
 VOLUME /app/data
 EXPOSE 8484
-HEALTHCHECK --interval=30s --timeout=3s CMD bun run src/healthcheck.ts || exit 1
-CMD ["bun", "run", "src/index.ts"]
+HEALTHCHECK --interval=30s --timeout=3s CMD bun src/healthcheck.ts || exit 1
+CMD ["bun", "src/index.ts"]
 ```
 
 `bun:sqlite` is built into Bun — no native build step needed. Use `bun:1-slim` for
@@ -113,7 +109,6 @@ jobs:
 
 ## Local dev (no Docker)
 
-- `bun run dev` → runs server with `--watch` on 8484.
-- `cd frontend && bun run dev` → Vite dev server on 5173, proxying `/api` + `/v1`
-  to 8484 (configure in `vite.config.ts` `server.proxy`).
+- `bun run dev` → builds frontend once, then runs server with `--watch` on 8484.
+- `bun run dev:server` → server watch only; rerun `bun run build` for frontend changes.
 - `bun run build` (root) → builds frontend into `public/`, then serve from Bun.

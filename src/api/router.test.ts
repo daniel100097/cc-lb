@@ -9,6 +9,7 @@ process.env.DB_PATH = dbPath;
 
 const { appRouter } = await import("./router");
 const { createAccount, updateAccount } = await import("../db/accounts");
+const { logRequest, updateRequestLogUsage } = await import("../db/request-log");
 
 const caller = appRouter.createCaller({ req: new Request("http://cc-lb.test") });
 
@@ -85,5 +86,70 @@ describe("appRouter accounts", () => {
     const resumed = await caller.accounts.update({ id: account.id, paused: false });
     expect(resumed.status).toBe("active");
     expect(resumed.pauseReason).toBeNull();
+  });
+});
+
+describe("appRouter requests", () => {
+  test("lists request logs with filters and options", async () => {
+    const account = createAccount({
+      name: "Request owner",
+      access_token: "access-requests",
+      refresh_token: "refresh-requests",
+      expires_at: Date.now() + 3_600_000,
+    });
+    const now = Date.now();
+    const id = logRequest({
+      accountId: account.id,
+      ts: now,
+      status: 200,
+      model: "claude-router-unique",
+      outcome: "ok",
+      method: "POST",
+      path: "/v1/messages",
+      latencyMs: 9,
+    });
+    updateRequestLogUsage(id, {
+      inputTokens: 11,
+      outputTokens: 13,
+      costUsd: 0.002,
+      upstreamRequestId: "req_router",
+      totalMs: 17,
+    });
+    logRequest({
+      accountId: null,
+      ts: now - 1000,
+      status: 503,
+      model: "claude-router-other",
+      outcome: "network_error",
+      method: "POST",
+      path: "/v1/messages/count_tokens",
+      error: "dial failed",
+    });
+
+    const page = await caller.requests.list({
+      accountId: account.id,
+      model: "claude-router-unique",
+      search: "messages",
+      limit: 1,
+      offset: 0,
+    });
+
+    expect(page.total).toBe(1);
+    expect(page.hasMore).toBe(false);
+    expect(page.entries[0]).toMatchObject({
+      accountId: account.id,
+      accountName: "Request owner",
+      model: "claude-router-unique",
+      outcome: "ok",
+      inputTokens: 11,
+      outputTokens: 13,
+      costUsd: 0.002,
+      upstreamRequestId: "req_router",
+    });
+
+    const options = await caller.requests.options();
+    expect(options.accounts).toContainEqual({ id: account.id, name: "Request owner" });
+    expect(options.models).toContain("claude-router-unique");
+    expect(options.outcomes).toContain("network_error");
   });
 });

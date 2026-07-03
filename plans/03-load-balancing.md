@@ -112,4 +112,5 @@ rateLimitBackoffMaxMs  = 300000
 sessionDurationMs      = 18000000   // 5h
 overloadRetryMax       = 2
 ```
-Editable via `PATCH /api/settings`, surfaced in the Settings page (plan 04).
+Editable via the tRPC `settings.update` mutation, surfaced in the Settings page
+(plan 04).

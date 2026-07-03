@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const accounts = sqliteTable("accounts", {
   id: text("id").primaryKey(),
@@ -44,10 +44,23 @@ export const requestLog = sqliteTable(
     status: integer("status"),
     model: text("model"),
     outcome: text("outcome"),
+    method: text("method"),
+    path: text("path"),
+    failoverAttempt: integer("failover_attempt").notNull().default(0),
+    latencyMs: integer("latency_ms"),
+    totalMs: integer("total_ms"),
+    error: text("error"),
+    upstreamRequestId: text("upstream_request_id"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    cacheReadTokens: integer("cache_read_tokens"),
+    cacheCreationTokens: integer("cache_creation_tokens"),
+    costUsd: real("cost_usd"),
   },
   (table) => [
     index("idx_request_log_ts").on(table.ts),
     index("idx_request_log_account_ts").on(table.accountId, table.ts),
+    index("idx_request_log_outcome_ts").on(table.outcome, table.ts),
   ],
 );
 

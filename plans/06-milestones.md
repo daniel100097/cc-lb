@@ -10,8 +10,8 @@ Build in dependency order; each milestone is independently testable.
 
 ## M2 — Accounts & Auth
 - `src/anthropic/constants.ts`, `oauth.ts` (PKCE, authorize URL, exchange, refresh).
-- `POST /api/accounts/import` (credentials JSON).
-- `POST /api/accounts/oauth/begin` + `/complete`.
+- `accounts.import` (credentials JSON).
+- `accounts.oauthBegin` + `accounts.oauthComplete`.
 - Token refresh with per-account dedup + backoff.
 - **Done when:** can add an account both ways; refresh works against a near-expiry token.
 
@@ -25,11 +25,11 @@ Build in dependency order; each milestone is independently testable.
 - `src/balancer/` pure strategies + `types.ts`.
 - Rate-limit parsing + `applyCooldown`, failover loop across accounts.
 - Session window tracking + sticky sessions.
-- Settings table + `GET/PATCH /api/settings`.
+- Settings table + tRPC `settings.get` / `settings.update`.
 - **Done when:** killing/limiting one account transparently fails over; strategy switch changes distribution.
 
 ## M5 — Dashboard
-- Vite + React + Tailwind v4 + shadcn scaffold; copy codex-lb `index.css` + `components.json`.
+- Bun + React + Tailwind v4 + shadcn scaffold; copy codex-lb `index.css` + `components.json`.
 - Layout shell (top bar + footer), Dashboard / Accounts / Settings pages.
 - Add Account dialog (both tabs). react-query data layer.
 - **Done when:** full account lifecycle + settings editable from the UI.

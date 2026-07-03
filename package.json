@@ -21,7 +21,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint .",
     "test": "bun test ./src/**/*.test.ts ./frontend/src/**/*.test.ts",
-    "test:e2e": "playwright test tests/e2e --browser=chromium",
+    "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "start": "bun src/index.ts",

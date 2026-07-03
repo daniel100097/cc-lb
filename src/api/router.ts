@@ -15,7 +15,15 @@ import {
 } from "../db/accounts";
 import { db } from "../db/client";
 import { getOAuthSession } from "../db/oauth-sessions";
-import { countOutcomesSince, countRequestsSince, listRecentRequests } from "../db/request-log";
+import {
+  countOutcomesSince,
+  countRequestsSince,
+  listRecentRequests,
+  listRequestModels,
+  listRequestOutcomes,
+  listRequests,
+  type RequestLogEntry,
+} from "../db/request-log";
 import { getSettings, patchSettings } from "../db/settings";
 import { publicProcedure, router } from "./trpc";
 
@@ -72,6 +80,29 @@ const completeOAuthSchema = z
     name: z.string().trim().max(120).optional(),
   })
   .strict();
+
+const requestFilterSchema = z
+  .object({
+    limit: z.number().int().min(1).max(200).optional(),
+    offset: z.number().int().min(0).optional(),
+    accountId: z.string().min(1).nullable().optional(),
+    outcome: z.string().min(1).nullable().optional(),
+    model: z.string().min(1).nullable().optional(),
+    since: z.number().int().nullable().optional(),
+    until: z.number().int().nullable().optional(),
+    search: z.string().trim().max(200).nullable().optional(),
+  })
+  .strict();
+
+const FIXED_OUTCOMES = [
+  "ok",
+  "rate_limited",
+  "unauthorized",
+  "network_error",
+  "token_error",
+  "upstream_error",
+  "telemetry",
+];
 
 export const appRouter = router({
   health: publicProcedure.query(() => ({ ok: true, service: "cc-lb", time: Date.now() })),
@@ -190,6 +221,33 @@ export const appRouter = router({
     update: publicProcedure.input(settingsPatchSchema).mutation(({ input }) => patchSettings(input)),
   }),
 
+  requests: router({
+    list: publicProcedure.input(requestFilterSchema.optional()).query(({ input }) => {
+      const limit = input?.limit ?? 50;
+      const offset = input?.offset ?? 0;
+      const page = listRequests({
+        limit,
+        offset,
+        accountId: input?.accountId ?? null,
+        outcome: input?.outcome ?? null,
+        model: input?.model ?? null,
+        since: input?.since ?? null,
+        until: input?.until ?? null,
+        search: input?.search?.trim() || null,
+      });
+      return {
+        entries: page.entries.map(toPublicRequestLogEntry),
+        total: page.total,
+        hasMore: offset + page.entries.length < page.total,
+      };
+    }),
+    options: publicProcedure.query(() => ({
+      accounts: listAccounts().map((account) => ({ id: account.id, name: account.name })),
+      models: listRequestModels(),
+      outcomes: Array.from(new Set([...FIXED_OUTCOMES, ...listRequestOutcomes()])),
+    })),
+  }),
+
   stats: publicProcedure.query(() => {
     const accounts = listAccounts();
     const now = Date.now();
@@ -249,5 +307,29 @@ function toPublicAccount(account: Account, now = Date.now()) {
     pauseReason: account.pause_reason,
     tokenHealth,
     available,
+  };
+}
+
+function toPublicRequestLogEntry(entry: RequestLogEntry) {
+  return {
+    id: entry.id,
+    accountId: entry.account_id,
+    accountName: entry.account_name,
+    ts: entry.ts,
+    status: entry.status,
+    model: entry.model,
+    outcome: entry.outcome ?? "unknown",
+    method: entry.method,
+    path: entry.path,
+    failoverAttempt: entry.failover_attempt,
+    latencyMs: entry.latency_ms,
+    totalMs: entry.total_ms,
+    error: entry.error,
+    upstreamRequestId: entry.upstream_request_id,
+    inputTokens: entry.input_tokens,
+    outputTokens: entry.output_tokens,
+    cacheReadTokens: entry.cache_read_tokens,
+    cacheCreationTokens: entry.cache_creation_tokens,
+    costUsd: entry.cost_usd,
   };
 }

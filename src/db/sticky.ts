@@ -1,32 +1,40 @@
-import { db } from "./client";
-
-const selectByKey = db.query<{ account_id: string; updated_at: number }, [string]>(
-  "SELECT account_id, updated_at FROM sticky_sessions WHERE key = ?",
-);
-const upsert = db.prepare(
-  `INSERT INTO sticky_sessions (key, account_id, updated_at) VALUES (?, ?, ?)
-   ON CONFLICT(key) DO UPDATE SET account_id = excluded.account_id, updated_at = excluded.updated_at`,
-);
+import { eq, lt } from "drizzle-orm";
+import { orm } from "./client";
+import { stickySessions } from "./schema";
 
 export function getSticky(key: string, ttlMs: number, now: number): string | null {
-  const row = selectByKey.get(key);
+  const row = orm
+    .select({
+      accountId: stickySessions.accountId,
+      updatedAt: stickySessions.updatedAt,
+    })
+    .from(stickySessions)
+    .where(eq(stickySessions.key, key))
+    .get();
   if (!row) return null;
-  if (now - row.updated_at > ttlMs) {
-    db.prepare("DELETE FROM sticky_sessions WHERE key = ?").run(key);
+  if (now - row.updatedAt > ttlMs) {
+    orm.delete(stickySessions).where(eq(stickySessions.key, key)).run();
     return null;
   }
-  return row.account_id;
+  return row.accountId;
 }
 
 export function setSticky(key: string, accountId: string, now: number): void {
-  upsert.run(key, accountId, now);
+  orm
+    .insert(stickySessions)
+    .values({ key, accountId, updatedAt: now })
+    .onConflictDoUpdate({
+      target: stickySessions.key,
+      set: { accountId, updatedAt: now },
+    })
+    .run();
 }
 
 /** Refresh TTL without changing the pinned account. */
 export function touchSticky(key: string, now: number): void {
-  db.prepare("UPDATE sticky_sessions SET updated_at = ? WHERE key = ?").run(now, key);
+  orm.update(stickySessions).set({ updatedAt: now }).where(eq(stickySessions.key, key)).run();
 }
 
 export function cleanupSticky(ttlMs: number, now: number): void {
-  db.prepare("DELETE FROM sticky_sessions WHERE updated_at < ?").run(now - ttlMs);
+  orm.delete(stickySessions).where(lt(stickySessions.updatedAt, now - ttlMs)).run();
 }

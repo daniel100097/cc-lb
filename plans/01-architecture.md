@@ -9,8 +9,8 @@ client (Claude Code, ANTHROPIC_BASE_URL=http://host:8484)
    │
    ▼
 Bun.serve ──► /v1/*            → proxy pipeline → api.anthropic.com
-          ──► /api/*           → dashboard REST API (accounts, settings, stats)
-          ──► /*               → static dashboard SPA (built by Vite into ./public)
+          ──► /api/trpc        → dashboard tRPC API (accounts, settings, stats, requests)
+          ──► /*               → static dashboard SPA (built by Bun into ./public)
 ```
 
 Contrast with references:
@@ -38,12 +38,12 @@ cc-lb/
 │   │   ├── types.ts          # AccountState, strategy interface
 │   │   └── strategies.ts     # pure selection functions (codex-lb style)
 │   └── api/
-│       ├── accounts.ts       # CRUD, import-json, oauth begin/complete
-│       ├── settings.ts       # get/patch settings
-│       └── stats.ts          # counters for dashboard
-├── frontend/                 # Vite + React 19 + Tailwind v4 + shadcn (new-york)
+│       ├── router.ts         # tRPC routers: accounts, settings, stats, requests
+│       ├── server.ts         # fetch adapter
+│       └── trpc.ts           # tRPC init
+├── frontend/                 # Bun-built React 19 + Tailwind v4 + shadcn (new-york)
 │   ├── src/ ...              # see 04-frontend-design.md
-│   └── vite.config.ts        # build.outDir = ../public
+│   └── index.html            # copied into ./public during root build
 ├── public/                   # built SPA (gitignored)
 ├── data/                     # SQLite file lives here (volume-mounted in Docker)
 ├── docs/research/            # research documents
@@ -65,18 +65,18 @@ cc-lb/
 
 5. **Settings in DB, edited via dashboard** (codex-lb pattern), not env vars. Env vars only for infra: `PORT`, `DB_PATH`, `DASHBOARD_PASSWORD` (optional).
 
-## REST API surface (dashboard)
+## tRPC API surface (dashboard)
 
 ```
-GET    /api/accounts                  list w/ status, usage, rate-limit info
-POST   /api/accounts/import           body: credentials JSON (+ name)
-POST   /api/accounts/oauth/begin      → { authUrl, sessionId }
-POST   /api/accounts/oauth/complete   body: { sessionId, code } → account
-PATCH  /api/accounts/:id              rename, priority, pause/resume
-DELETE /api/accounts/:id
-GET    /api/settings                  strategy + knobs
-PATCH  /api/settings
-GET    /api/stats                     totals, per-account counters
+accounts.list                         list w/ status, usage, rate-limit info
+accounts.import                       body: credentials JSON (+ name)
+accounts.oauthBegin                   → { authUrl, sessionId }
+accounts.oauthComplete                body: { sessionId, code } → account
+accounts.update                       rename, priority, pause/resume
+accounts.delete
+settings.get / settings.update        strategy + knobs
+stats                                 totals, per-account counters
+requests.list / requests.options      paginated request log + filters
 GET    /api/health                    liveness
 ```
 

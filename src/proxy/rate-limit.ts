@@ -90,10 +90,16 @@ export function recordMetadata(account: Account, info: RateLimitInfo): void {
   });
 }
 
-/** On a successful response, clear cooldown + reset the consecutive counter. */
-export function clearRateLimit(account: Account): void {
-  if (account.rate_limited_until === null && account.consecutive_rate_limits === 0) return;
-  updateAccount(account.id, { rate_limited_until: null, consecutive_rate_limits: 0 });
+/** On a successful response, clear cooldown. Reset the counter after a healthy quiet window. */
+export function clearRateLimit(account: Account, now = Date.now()): void {
+  const healthyForMs = account.last_used === null ? 0 : now - account.last_used;
+  const resetConsecutive = account.consecutive_rate_limits > 0 && healthyForMs >= 5 * 60 * 1000;
+  if (account.rate_limited_until === null && !resetConsecutive) return;
+
+  updateAccount(account.id, {
+    rate_limited_until: null,
+    consecutive_rate_limits: resetConsecutive ? 0 : account.consecutive_rate_limits,
+  });
   account.rate_limited_until = null;
-  account.consecutive_rate_limits = 0;
+  if (resetConsecutive) account.consecutive_rate_limits = 0;
 }

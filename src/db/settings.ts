@@ -1,4 +1,5 @@
-import { db } from "./client";
+import { orm } from "./client";
+import { settings as settingsTable } from "./schema";
 
 export interface Settings {
   strategy: string;
@@ -20,13 +21,8 @@ export const DEFAULT_SETTINGS: Settings = {
   overloadRetryMax: 2,
 };
 
-const selectAll = db.query<{ key: string; value: string }, []>("SELECT key, value FROM settings");
-const upsert = db.prepare(
-  "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-);
-
 export function getSettings(): Settings {
-  const stored = Object.fromEntries(selectAll.all().map((r) => [r.key, r.value]));
+  const stored = Object.fromEntries(orm.select().from(settingsTable).all().map((row) => [row.key, row.value]));
   return {
     strategy: stored.strategy ?? DEFAULT_SETTINGS.strategy,
     stickySessions:
@@ -46,18 +42,26 @@ export function getSettings(): Settings {
 }
 
 export function patchSettings(patch: Partial<Settings>): Settings {
-  if (patch.strategy !== undefined) upsert.run("strategy", patch.strategy);
-  if (patch.stickySessions !== undefined) upsert.run("stickySessions", String(patch.stickySessions));
-  if (patch.stickyTtlMs !== undefined) upsert.run("stickyTtlMs", String(patch.stickyTtlMs));
+  if (patch.strategy !== undefined) upsertSetting("strategy", patch.strategy);
+  if (patch.stickySessions !== undefined) upsertSetting("stickySessions", String(patch.stickySessions));
+  if (patch.stickyTtlMs !== undefined) upsertSetting("stickyTtlMs", String(patch.stickyTtlMs));
   if (patch.rateLimitBackoffBaseMs !== undefined) {
-    upsert.run("rateLimitBackoffBaseMs", String(patch.rateLimitBackoffBaseMs));
+    upsertSetting("rateLimitBackoffBaseMs", String(patch.rateLimitBackoffBaseMs));
   }
   if (patch.rateLimitBackoffMaxMs !== undefined) {
-    upsert.run("rateLimitBackoffMaxMs", String(patch.rateLimitBackoffMaxMs));
+    upsertSetting("rateLimitBackoffMaxMs", String(patch.rateLimitBackoffMaxMs));
   }
-  if (patch.sessionDurationMs !== undefined) upsert.run("sessionDurationMs", String(patch.sessionDurationMs));
-  if (patch.overloadRetryMax !== undefined) upsert.run("overloadRetryMax", String(patch.overloadRetryMax));
+  if (patch.sessionDurationMs !== undefined) upsertSetting("sessionDurationMs", String(patch.sessionDurationMs));
+  if (patch.overloadRetryMax !== undefined) upsertSetting("overloadRetryMax", String(patch.overloadRetryMax));
   return getSettings();
+}
+
+function upsertSetting(key: string, value: string): void {
+  orm
+    .insert(settingsTable)
+    .values({ key, value })
+    .onConflictDoUpdate({ target: settingsTable.key, set: { value } })
+    .run();
 }
 
 function toStoredNumber(raw: string | undefined, fallback: number): number {

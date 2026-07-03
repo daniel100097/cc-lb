@@ -99,6 +99,24 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       CREATE INDEX IF NOT EXISTS idx_oauth_sessions_expires_at ON oauth_sessions(expires_at);
     `,
   },
+  {
+    id: "004_request_log_details",
+    sql: `
+      ALTER TABLE request_log ADD COLUMN method TEXT;
+      ALTER TABLE request_log ADD COLUMN path TEXT;
+      ALTER TABLE request_log ADD COLUMN failover_attempt INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE request_log ADD COLUMN latency_ms INTEGER;
+      ALTER TABLE request_log ADD COLUMN total_ms INTEGER;
+      ALTER TABLE request_log ADD COLUMN error TEXT;
+      ALTER TABLE request_log ADD COLUMN upstream_request_id TEXT;
+      ALTER TABLE request_log ADD COLUMN input_tokens INTEGER;
+      ALTER TABLE request_log ADD COLUMN output_tokens INTEGER;
+      ALTER TABLE request_log ADD COLUMN cache_read_tokens INTEGER;
+      ALTER TABLE request_log ADD COLUMN cache_creation_tokens INTEGER;
+      ALTER TABLE request_log ADD COLUMN cost_usd REAL;
+      CREATE INDEX IF NOT EXISTS idx_request_log_outcome_ts ON request_log(outcome, ts);
+    `,
+  },
 ];
 
 function migrate() {

@@ -19,7 +19,7 @@ Bun server, SQLite persistence, account/OAuth APIs, Anthropic proxy failover, tR
 dashboard, Docker, and CI are implemented. See [`plans/`](plans/) and
 [`docs/research/`](docs/research/) for the design notes behind the implementation.
 
-## Add accounts (planned)
+## Add Accounts
 
 Two ways, from the dashboard:
 1. **Paste credentials JSON** — the contents of `~/.claude/.credentials.json`.
@@ -44,6 +44,14 @@ docker compose up
 
 The image is published to `ghcr.io/daniel100097/cc-lb` by GitHub Actions on push to main.
 
+## Environment
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `PORT` | `8484` | Bun server port. |
+| `DB_PATH` | `./data/cc-lb.db` | SQLite database location. |
+| `DASHBOARD_PASSWORD` | unset | When set, protects the SPA and `/api/trpc`; `/v1/*` remains unauthenticated. |
+
 ## Security
 
 `data/` holds the SQLite database with **plaintext OAuth tokens** — it is the
@@ -54,7 +62,7 @@ without setting `DASHBOARD_PASSWORD` and/or keeping it on a private network. The
 ## Layout
 
 ```
-src/        Bun server (proxy + REST API)
+src/        Bun server (proxy + tRPC API)
 frontend/   Bun-built React 19 + Tailwind v4 + shadcn dashboard
 plans/      implementation plan (start at plans/00-overview.md)
 docs/       research on better-ccflare & codex-lb

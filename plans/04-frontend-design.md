@@ -7,15 +7,15 @@ Same stack, same tokens, same layout — different content (Claude accounts, not
 ## Stack (match codex-lb exactly)
 
 - React 19 + react-router-dom 7 (client SPA)
-- Vite + `@vitejs/plugin-react-swc`, built by Bun
-- Tailwind CSS v4 via `@tailwindcss/vite` (CSS-first config, **no** `tailwind.config.js`)
+- Bun browser bundler, built by root scripts
+- Tailwind CSS v4 via `@tailwindcss/cli` (CSS-first config, **no** `tailwind.config.js`)
 - shadcn/ui — style **new-york**, base color **neutral**, CSS-variables mode (`components.json`)
 - radix-ui primitives, `cva` + `clsx` + `tailwind-merge` (`cn()`)
 - @tanstack/react-query 5, zustand 5 (theme/privacy stores)
 - react-hook-form 7 + zod 4
 - lucide-react icons, sonner toasts
 - recharts (lazy) — optional, only if we add usage charts
-- Build `build.outDir = ../public` so the Bun server serves it (codex-lb builds into `app/static`)
+- Build into `public/` so the Bun server serves it (codex-lb builds into `app/static`)
 
 ## Design tokens — copy verbatim
 
@@ -58,14 +58,14 @@ A shadcn `Dialog` with two tabs (radix Tabs), matching plan 02's two paths:
 **Tab 1 — Paste credentials JSON**
 - `Textarea` for the JSON blob (or file drop of `.credentials.json`).
 - Name field (optional; default derived).
-- Submit → `POST /api/accounts/import`. Toast success, invalidate `accounts` query.
+- Submit → `accounts.import`. Toast success, invalidate `accounts` query.
 - Inline `alert-message` on parse/validation error.
 
 **Tab 2 — Sign in with Claude (OAuth)**
-- Step 1 button "Generate login link" → `POST /api/accounts/oauth/begin` → open
+- Step 1 button "Generate login link" → `accounts.oauthBegin` → open
   `authUrl` in a new tab, show the URL with a `copy-button`.
-- Step 2 `Input` "Paste the code" (format `code#state`) + Add → `POST
-  /api/accounts/oauth/complete`. Toast + refresh.
+- Step 2 `Input` "Paste the code" (format `code#state`) + Add →
+  `accounts.oauthComplete`. Toast + refresh.
 - Small helper text explaining the manual copy-paste (Anthropic returns the code
   in-browser, `code=true`).
 
@@ -82,12 +82,11 @@ toggle store — reuse codex-lb `blur-email.tsx`.
 `routing_strategy` as a shadcn `Select` (the 5 strategies from plan 03, each with a
 one-line description like codex-lb's README). Toggles/number inputs for
 `stickySessions`, `stickyTtlMs`, backoff base/max, session duration, overload
-retries. Save → `PATCH /api/settings`, toast. Footer status bar reads the active
-strategy from here.
+retries. Save → tRPC `settings.update`, toast. Footer status bar reads the
+active strategy from here.
 
 ## Data layer
 
-`frontend/src/lib/api.ts` — thin fetch wrappers. react-query hooks
-(`useAccounts`, `useSettings`, `useStats`) with sensible `staleTime` and a 10s
-poll on the dashboard for live status. zustand `use-theme` (copy from codex-lb),
-`use-privacy`.
+`frontend/src/lib/trpc.ts` — tRPC React client over `/api/trpc`. react-query
+hooks use sensible `staleTime` and polling on live dashboard pages. zustand
+`use-theme` and `use-privacy`.

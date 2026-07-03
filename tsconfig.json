@@ -29,6 +29,13 @@
       "@/*": ["./frontend/src/*"]
     }
   },
-  "include": ["src/**/*.ts", "frontend/src/**/*.ts", "frontend/src/**/*.tsx", "drizzle.config.ts"],
+  "include": [
+    "src/**/*.ts",
+    "frontend/src/**/*.ts",
+    "frontend/src/**/*.tsx",
+    "tests/**/*.ts",
+    "drizzle.config.ts",
+    "playwright.config.ts"
+  ],
   "exclude": ["reference", "node_modules", "data", "public", "dist", "drizzle"]
 }

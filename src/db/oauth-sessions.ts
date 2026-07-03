@@ -1,4 +1,6 @@
-import { db } from "./client";
+import { eq, lte } from "drizzle-orm";
+import { orm } from "./client";
+import { oauthSessions } from "./schema";
 
 export interface OAuthSession {
   id: string;
@@ -22,44 +24,52 @@ export interface NewOAuthSession {
   expiresAt: number;
 }
 
-const insert = db.prepare(
-  `INSERT INTO oauth_sessions
-     (id, verifier, state, account_id, name, priority, created_at, expires_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-);
-
-const selectById = db.query<OAuthSession, [string]>(
-  "SELECT id, verifier, state, account_id, name, priority, created_at, expires_at FROM oauth_sessions WHERE id = ?",
-);
+type OAuthSessionRow = typeof oauthSessions.$inferSelect;
 
 export function createOAuthSession(session: NewOAuthSession): void {
   cleanupExpiredOAuthSessions(Date.now());
-  insert.run(
-    session.id,
-    session.verifier,
-    session.state,
-    session.accountId ?? null,
-    session.name ?? null,
-    session.priority ?? 0,
-    session.createdAt,
-    session.expiresAt,
-  );
+  orm
+    .insert(oauthSessions)
+    .values({
+      id: session.id,
+      verifier: session.verifier,
+      state: session.state,
+      accountId: session.accountId ?? null,
+      name: session.name ?? null,
+      priority: session.priority ?? 0,
+      createdAt: session.createdAt,
+      expiresAt: session.expiresAt,
+    })
+    .run();
 }
 
 export function getOAuthSession(id: string, now = Date.now()): OAuthSession | null {
-  const session = selectById.get(id);
+  const session = orm.select().from(oauthSessions).where(eq(oauthSessions.id, id)).get();
   if (!session) return null;
-  if (session.expires_at <= now) {
+  if (session.expiresAt <= now) {
     deleteOAuthSession(id);
     return null;
   }
-  return session;
+  return toOAuthSession(session);
 }
 
 export function deleteOAuthSession(id: string): void {
-  db.prepare("DELETE FROM oauth_sessions WHERE id = ?").run(id);
+  orm.delete(oauthSessions).where(eq(oauthSessions.id, id)).run();
 }
 
 export function cleanupExpiredOAuthSessions(now: number): void {
-  db.prepare("DELETE FROM oauth_sessions WHERE expires_at <= ?").run(now);
+  orm.delete(oauthSessions).where(lte(oauthSessions.expiresAt, now)).run();
+}
+
+function toOAuthSession(row: OAuthSessionRow): OAuthSession {
+  return {
+    id: row.id,
+    verifier: row.verifier,
+    state: row.state,
+    account_id: row.accountId,
+    name: row.name,
+    priority: row.priority,
+    created_at: row.createdAt,
+    expires_at: row.expiresAt,
+  };
 }

@@ -64,14 +64,14 @@ Claude Code stores creds at `~/.claude/.credentials.json`:
 } }
 ```
 
-`POST /api/accounts/import` accepts either that whole object or the inner `claudeAiOauth`. Server maps:
+`accounts.import` accepts either that whole object or the inner `claudeAiOauth`. Server maps:
 `access_token←accessToken`, `refresh_token←refreshToken`, `expires_at←expiresAt` (already ms), `scopes←scopes.join(' ')`, `refresh_token_issued_at←now`. Insert row. If `expires_at` is past, a refresh is triggered on first use.
 
 ### Path B: direct OAuth from dashboard
 
 Two-step, mirrors better-ccflare `begin()`/`complete()`:
 
-**`POST /api/accounts/oauth/begin`**
+**`accounts.oauthBegin`**
 1. Generate PKCE (`src/anthropic/oauth.ts`): `verifier` = base64url(32 random bytes); `challenge` = base64url(SHA-256(verifier)); method `S256`.
 2. Generate `state` = hex(32 random bytes) — **separate** from verifier.
 3. Build authorize URL with params: `code=true`, `client_id`, `response_type=code`, `redirect_uri`, `scope=SCOPES`, `code_challenge`, `code_challenge_method=S256`, `state`.
@@ -79,7 +79,7 @@ Two-step, mirrors better-ccflare `begin()`/`complete()`:
 
 Dashboard opens `authUrl`; Anthropic shows a code the user copies (format `code#state`).
 
-**`POST /api/accounts/oauth/complete`** `{ sessionId, code }`
+**`accounts.oauthComplete`** `{ sessionId, code }`
 1. Look up session → verifier. Split `code` on `#` → `[authCode, returnedState]`.
 2. JSON POST to `TOKEN_URL`:
    ```json
@@ -113,5 +113,5 @@ Response headers: strip `content-encoding`, `content-length`, `transfer-encoding
 ## Security notes
 
 - Tokens stored plaintext in SQLite (same as both references). Document that `data/` must be protected; it is the secret store.
-- Optional `DASHBOARD_PASSWORD` gates `/api/*` and the SPA with a simple bearer/cookie — the proxy `/v1/*` path is unauthenticated by default (bind to localhost or a private network). Make this explicit in README.
+- Optional `DASHBOARD_PASSWORD` gates `/api/trpc`, other `/api/*` dashboard routes, and the SPA with a simple bearer/cookie — the proxy `/v1/*` path is unauthenticated by default (bind to localhost or a private network). Make this explicit in README.
 - Never log `authorization`/`refresh_token`/`x-api-key`; strip them from any request logging.
