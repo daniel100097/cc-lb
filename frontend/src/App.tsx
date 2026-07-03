@@ -281,6 +281,7 @@ function RequestsPage() {
       <section className="rounded-xl border bg-card p-4">
         <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1fr_auto]">
           <FilterSelect
+            id="request-account"
             label="Account"
             value={accountId}
             onChange={(value) => {
@@ -293,6 +294,7 @@ function RequestsPage() {
             ]}
           />
           <FilterSelect
+            id="request-outcome"
             label="Outcome"
             value={outcome}
             onChange={(value) => {
@@ -305,6 +307,7 @@ function RequestsPage() {
             ]}
           />
           <FilterSelect
+            id="request-model"
             label="Model"
             value={model}
             onChange={(value) => {
@@ -472,11 +475,13 @@ function AccountsTable({ accounts, compact = false }: { accounts: Account[]; com
 }
 
 function FilterSelect({
+  id,
   label,
   value,
   options,
   onChange,
 }: {
+  id: string;
   label: string;
   value: string;
   options: { value: string; label: string }[];
@@ -484,8 +489,9 @@ function FilterSelect({
 }) {
   return (
     <div className="grid gap-2">
-      <Label>{label}</Label>
+      <Label htmlFor={id}>{label}</Label>
       <select
+        id={id}
         className="border-input bg-background h-9 rounded-md border px-3 text-sm"
         value={value}
         onChange={(event) => onChange(event.target.value)}

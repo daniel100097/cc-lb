@@ -21,6 +21,9 @@ reference
 # code coverage
 coverage
 *.lcov
+test-results
+playwright-report
+output/playwright
 
 # logs
 logs
