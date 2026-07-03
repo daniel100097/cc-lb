@@ -42,7 +42,7 @@ there is no Vite project or nested frontend package.
 docker compose up
 ```
 
-The image is published to `ghcr.io/<owner>/cc-lb` by GitHub Actions on push to main.
+The image is published to `ghcr.io/daniel100097/cc-lb` by GitHub Actions on push to main.
 
 ## Security
 

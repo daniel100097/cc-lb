@@ -45,7 +45,7 @@ the runtime to keep the image small.
 ```yaml
 services:
   cc-lb:
-    image: ghcr.io/OWNER/cc-lb:latest
+    image: ghcr.io/daniel100097/cc-lb:latest
     build: .
     ports:
       - "8484:8484"
@@ -80,7 +80,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -107,7 +107,7 @@ jobs:
 ```
 
 - Uses the built-in `GITHUB_TOKEN` — no extra secrets to configure.
-- Image published to `ghcr.io/<owner>/cc-lb`. Tags: branch name, semver on tag
+- Image published to `ghcr.io/daniel100097/cc-lb`. Tags: branch name, semver on tag
   push, short SHA, and `latest` on main.
 - GHA layer cache speeds up rebuilds.
 

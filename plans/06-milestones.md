@@ -37,7 +37,7 @@ Build in dependency order; each milestone is independently testable.
 ## M6 — Docker & CI
 - Dockerfile (multi-stage), docker-compose, GHCR workflow (plan 05).
 - README: setup, env vars, security note on `data/`.
-- **Done when:** `docker compose up` serves a working app; push to main publishes `ghcr.io/<owner>/cc-lb:latest`.
+- **Done when:** `docker compose up` serves a working app; push to main publishes `ghcr.io/daniel100097/cc-lb:latest`.
 
 ## Suggested order of first PRs
 1. M1 + repo scaffold (this init).

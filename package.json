@@ -3,11 +3,19 @@
   "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daniel100097/cc-lb.git"
+  },
+  "homepage": "https://github.com/daniel100097/cc-lb#readme",
+  "bugs": {
+    "url": "https://github.com/daniel100097/cc-lb/issues"
+  },
   "scripts": {
     "dev": "bun run build && bun --watch src/index.ts",
     "dev:server": "bun --watch src/index.ts",
     "build": "bun run build:html && bun run build:css && bun run build:client",
-    "build:html": "mkdir -p public/assets && cp frontend/index.html public/index.html && cp -R frontend/public/. public/",
+    "build:html": "mkdir -p public/assets && cp frontend/index.html public/index.html && if [ -d frontend/public ]; then cp -R frontend/public/. public/; fi",
     "build:css": "tailwindcss -i frontend/src/index.css -o public/assets/index.css --minify",
     "build:client": "bun build frontend/src/main.tsx --target browser --outdir public/assets --entry-naming [name].js --chunk-naming [name]-[hash].js --asset-naming [name]-[hash].[ext] --minify",
     "typecheck": "tsc --noEmit",

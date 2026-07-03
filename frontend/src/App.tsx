@@ -181,7 +181,12 @@ function StatusBar() {
           <span>{health.data?.ok ? "Online" : "Checking"}</span>
           <span className="hidden sm:inline">Strategy: {settings.data?.strategy ?? "priority"}</span>
         </div>
-        <a className="hover:text-foreground flex items-center gap-1 transition-colors" href="https://github.com" rel="noreferrer" target="_blank">
+        <a
+          className="hover:text-foreground flex items-center gap-1 transition-colors"
+          href="https://github.com/daniel100097/cc-lb"
+          rel="noreferrer"
+          target="_blank"
+        >
           <Code2 className="size-3.5" />
           <span>cc-lb</span>
         </a>

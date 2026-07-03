@@ -1,6 +1,6 @@
 services:
   cc-lb:
-    image: ghcr.io/OWNER/cc-lb:latest
+    image: ghcr.io/daniel100097/cc-lb:latest
     build: .
     ports:
       - "8484:8484"
