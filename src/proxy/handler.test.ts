@@ -45,7 +45,7 @@ describe("handleProxy", () => {
     expect(logs.entries[0]?.raw_response_body).toBeNull();
   });
 
-  test("fallback success does not overwrite unavailable sticky home", async () => {
+  test("failover moves the sticky session to the account that served it", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -69,7 +69,7 @@ describe("handleProxy", () => {
       expiresAt: now + 3_600_000,
     });
     updateAccount(home.id, { rate_limited_until: now + 60_000 });
-    setSticky("session-abc", home.id, now);
+    setSticky("sid:session-abc", home.id, now);
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = Object.assign(
@@ -97,7 +97,7 @@ describe("handleProxy", () => {
       expect(response.status).toBe(200);
       await response.text();
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(getSticky("session-abc", 60_000, Date.now())).toBe(home.id);
+      expect(getSticky("sid:session-abc", 60_000, Date.now())).toBe(fallback.id);
       const logs = listRequests({ limit: 10, offset: 0, search: "claude-handler-unique" });
       expect(logs.total).toBe(1);
       expect(logs.entries[0]?.account_id).toBe(fallback.id);
@@ -106,6 +106,182 @@ describe("handleProxy", () => {
       expect(logs.entries[0]?.cost_usd).toBe(0.004);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("new sticky sessions skip accounts at or above the usage cutoff", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const hot = createAccount({ name: "Cutoff hot", priority: 0 });
+    seedAccountCredentials(hot.id, {
+      accessToken: "cutoff-hot-access",
+      refreshToken: "cutoff-hot-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const fresh = createAccount({ name: "Cutoff fresh", priority: 1 });
+    seedAccountCredentials(fresh.id, {
+      accessToken: "cutoff-fresh-access",
+      refreshToken: "cutoff-fresh-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    updateAccount(hot.id, {
+      usage_windows: sessionUsageWindows(96, now + 3_600_000),
+      usage_checked_at: now,
+    });
+
+    const { restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-cc-session-id": "session-cutoff-new" },
+          body: JSON.stringify({ model: "claude-cutoff-new", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(getSticky("sid:session-cutoff-new", 60_000, Date.now())).toBe(fresh.id);
+      const logs = listRequests({ limit: 10, offset: 0, search: "claude-cutoff-new" });
+      expect(logs.entries[0]?.account_id).toBe(fresh.id);
+    } finally {
+      restore();
+    }
+  });
+
+  test("new sticky sessions also skip accounts above the weekly cutoff", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const weekly = createAccount({ name: "Cutoff weekly", priority: 0 });
+    seedAccountCredentials(weekly.id, {
+      accessToken: "cutoff-weekly-access",
+      refreshToken: "cutoff-weekly-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const fresh = createAccount({ name: "Cutoff weekly fresh", priority: 1 });
+    seedAccountCredentials(fresh.id, {
+      accessToken: "cutoff-weekly-fresh-access",
+      refreshToken: "cutoff-weekly-fresh-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    updateAccount(weekly.id, {
+      usage_windows: JSON.stringify([
+        { label: "Current session", kind: "session", model: null, usedPercent: 12, resetsRaw: null, resetsAtMs: now + 3_600_000 },
+        { label: "Current week (all models)", kind: "week_all_models", model: null, usedPercent: 97, resetsRaw: null, resetsAtMs: now + 3_600_000 },
+      ]),
+      usage_checked_at: now,
+    });
+
+    const { restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-cc-session-id": "session-cutoff-weekly" },
+          body: JSON.stringify({ model: "claude-cutoff-weekly", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(getSticky("sid:session-cutoff-weekly", 60_000, Date.now())).toBe(fresh.id);
+    } finally {
+      restore();
+    }
+  });
+
+  test("saturated accounts still serve new sessions when the whole pool is above the cutoff", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const first = createAccount({ name: "Cutoff all A", priority: 0 });
+    seedAccountCredentials(first.id, {
+      accessToken: "cutoff-all-a-access",
+      refreshToken: "cutoff-all-a-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const second = createAccount({ name: "Cutoff all B", priority: 1 });
+    seedAccountCredentials(second.id, {
+      accessToken: "cutoff-all-b-access",
+      refreshToken: "cutoff-all-b-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    updateAccount(first.id, {
+      usage_windows: sessionUsageWindows(96, now + 3_600_000),
+      usage_checked_at: now,
+    });
+    updateAccount(second.id, {
+      usage_windows: sessionUsageWindows(98, now + 3_600_000),
+      usage_checked_at: now,
+    });
+
+    const { restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-cc-session-id": "session-cutoff-all" },
+          body: JSON.stringify({ model: "claude-cutoff-all", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(getSticky("sid:session-cutoff-all", 60_000, Date.now())).toBe(first.id);
+    } finally {
+      restore();
+    }
+  });
+
+  test("an existing sticky home above the cutoff keeps its sessions", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const home = createAccount({ name: "Cutoff home", priority: 0 });
+    seedAccountCredentials(home.id, {
+      accessToken: "cutoff-home-access",
+      refreshToken: "cutoff-home-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const other = createAccount({ name: "Cutoff other", priority: 1 });
+    seedAccountCredentials(other.id, {
+      accessToken: "cutoff-other-access",
+      refreshToken: "cutoff-other-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    updateAccount(home.id, {
+      usage_windows: sessionUsageWindows(96, now + 3_600_000),
+      usage_checked_at: now,
+    });
+    setSticky("sid:session-cutoff-home", home.id, now);
+
+    const { restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-cc-session-id": "session-cutoff-home" },
+          body: JSON.stringify({ model: "claude-cutoff-home", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(getSticky("sid:session-cutoff-home", 60_000, Date.now())).toBe(home.id);
+      const logs = listRequests({ limit: 10, offset: 0, search: "claude-cutoff-home" });
+      expect(logs.entries[0]?.account_id).toBe(home.id);
+    } finally {
+      restore();
     }
   });
 
@@ -712,6 +888,12 @@ describe("handleProxy", () => {
     expect(body.message).toBeUndefined();
   });
 });
+
+function sessionUsageWindows(usedPercent: number, resetsAtMs: number | null): string {
+  return JSON.stringify([
+    { label: "Current session", kind: "session", model: null, usedPercent, resetsRaw: null, resetsAtMs },
+  ]);
+}
 
 function captureFetch(respond: () => Response) {
   const headers: Headers[] = [];

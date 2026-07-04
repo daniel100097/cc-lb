@@ -5,6 +5,7 @@ import {
   unauthorizedApiResponse,
 } from "./auth";
 import { handleTrpc } from "./api/server";
+import { startUsageRefresher } from "./anthropic/usage-refresher";
 import { getSettings } from "./db/settings";
 import { cleanupSticky } from "./db/sticky";
 import { handleProxy } from "./proxy/handler";
@@ -18,6 +19,8 @@ cleanupSticky(getSettings().stickyTtlMs, Date.now());
 setInterval(() => {
   cleanupSticky(getSettings().stickyTtlMs, Date.now());
 }, STICKY_CLEANUP_INTERVAL_MS);
+
+startUsageRefresher();
 
 const server = Bun.serve({
   port: PORT,

@@ -37,7 +37,7 @@ const PROBE_TOTAL_TIMEOUT_MS = 150_000;
 const PROBE_NOOP_COOLDOWN_MS = 10 * 60_000;
 const PROBE_CONCURRENCY = 2;
 
-export type ProbeTrigger = "expired" | "safety_window" | "manual" | "seed";
+export type ProbeTrigger = "expired" | "safety_window" | "manual" | "seed" | "usage";
 export type ProbeOutcome = "refreshed" | "valid_noop" | "skipped_cooldown";
 
 export interface ProbeResult {
@@ -139,8 +139,9 @@ async function executeProbe(accountId: string, trigger: ProbeTrigger): Promise<P
   const before = readCredentialsFile(accountId);
 
   // Fast path: the credentials file already satisfies the trigger's need — no
-  // need to boot the CLI (manual always boots so the dashboard yields usage).
-  if (trigger !== "manual" && before && triggerSatisfied(before, trigger, now)) {
+  // need to boot the CLI. Manual and usage triggers always boot: both exist to
+  // capture a fresh /usage panel, not just to keep the token alive.
+  if (trigger !== "manual" && trigger !== "usage" && before && triggerSatisfied(before, trigger, now)) {
     return { outcome: trigger === "expired" ? "refreshed" : "valid_noop", usage: null };
   }
 

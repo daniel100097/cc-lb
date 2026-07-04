@@ -85,7 +85,8 @@ type NumberSettingsKey =
   | "rateLimitBackoffBaseMs"
   | "rateLimitBackoffMaxMs"
   | "sessionDurationMs"
-  | "overloadRetryMax";
+  | "overloadRetryMax"
+  | "newSessionUsageCutoffPercent";
 
 type DashboardTimeframe = "1d" | "7d" | "30d";
 type AccountViewMode = "cards" | "list";
@@ -2189,6 +2190,12 @@ function SettingsForm({
         helper={durationMs(form.sessionDurationMs)}
       />
       <SettingNumber label="Overload retries" value={form.overloadRetryMax} onChange={(value) => updateNumber("overloadRetryMax", value)} helper="Attempts" />
+      <SettingNumber
+        label="New-session usage cutoff"
+        value={form.newSessionUsageCutoffPercent}
+        onChange={(value) => updateNumber("newSessionUsageCutoffPercent", value)}
+        helper="% used of the 5h or weekly window — accounts at or above receive no new sticky sessions"
+      />
       <div className="flex justify-end lg:col-span-2">
         <Button type="submit" disabled={updateSettings.isPending}>
           {updateSettings.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}

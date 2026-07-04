@@ -3,13 +3,14 @@ import { API_BASE } from "../anthropic/constants";
 import { prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
 import { getValidAccessToken } from "../anthropic/token-manager";
 import { isStrategyName, selectAccount } from "../balancer/strategies";
-import { isAvailable, toState, type AccountState } from "../balancer/types";
+import { isAvailable, toState, type AccountState, type StrategyName } from "../balancer/types";
 import { bumpRequestCount, listAccounts, updateAccount, type Account } from "../db/accounts";
 import { validateApiKeySecret, type ApiKey } from "../db/api-keys";
 import { getSettings, type Settings } from "../db/settings";
 import { getSticky, setSticky, touchSticky } from "../db/sticky";
 import { logRequest, updateRequestLogUsage } from "../db/request-log";
 import { applyCooldown, clearRateLimit, parseRateLimit, recordMetadata } from "./rate-limit";
+import { gatedUsedPercent } from "./usage-gate";
 import { deriveStickyKey } from "./sticky-key";
 import { extractUsageFromBody } from "./usage";
 
@@ -102,11 +103,13 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       continue;
     }
 
-    // Success — pin new sticky sessions, but don't overwrite a temporarily unavailable home pin.
+    // Success — pin new sticky sessions; when a session was served by a
+    // different account than its pin (home rate-limited or otherwise skipped),
+    // move the session to the account that actually served it.
     if (stickyKey) {
       if (stickyPinnedId === account.id) {
         touchSticky(stickyKey, Date.now());
-      } else if (stickyPinnedId === null) {
+      } else {
         setSticky(stickyKey, account.id, Date.now());
       }
     }
@@ -359,22 +362,41 @@ function orderAccounts(
     }
   }
 
-  // Then strategy order over the remaining available pool.
+  // Then strategy order over the remaining available pool. For sticky-keyed
+  // requests any of these accounts can become the session's new home, so
+  // accounts at/above the usage cutoff (5h session or weekly window) go last —
+  // used only when no fresher account exists. The pinned account above is
+  // exempt: an existing session keeps its home even past the cutoff.
   const pool = available.filter((s) => !seen.has(s.id));
+  const saturated = new Set<string>();
+  if (stickyKey) {
+    for (const s of pool) {
+      const used = gatedUsedPercent(byId.get(s.id)?.usage_windows ?? null, now);
+      if (used !== null && used >= settings.newSessionUsageCutoffPercent) saturated.add(s.id);
+    }
+  }
+  const strategy = isStrategyName(settings.strategy) ? settings.strategy : "priority";
+  const chosen = [
+    ...strategyOrder(pool.filter((s) => !saturated.has(s.id)), strategy, now),
+    ...strategyOrder(pool.filter((s) => saturated.has(s.id)), strategy, now),
+  ];
+  for (const s of chosen) {
+    const account = byId.get(s.id);
+    if (account) result.push(account);
+  }
+  return result;
+}
+
+function strategyOrder(pool: AccountState[], strategy: StrategyName, now: number): AccountState[] {
   const chosen: AccountState[] = [];
   let remaining = [...pool];
-  const strategy = isStrategyName(settings.strategy) ? settings.strategy : "priority";
   while (remaining.length > 0) {
     const pick = selectAccount(strategy, remaining, now);
     if (!pick) break;
     chosen.push(pick);
     remaining = remaining.filter((s) => s.id !== pick.id);
   }
-  for (const s of chosen) {
-    const account = byId.get(s.id);
-    if (account) result.push(account);
-  }
-  return result;
+  return chosen;
 }
 
 function maybeRollSession(account: Account, settings: Settings, now: number): void {

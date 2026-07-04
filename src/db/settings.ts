@@ -11,6 +11,8 @@ export interface Settings {
   rateLimitBackoffMaxMs: number;
   sessionDurationMs: number;
   overloadRetryMax: number;
+  /** Accounts at/above this % of the 5h session or weekly window get no new sticky sessions. */
+  newSessionUsageCutoffPercent: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -23,6 +25,7 @@ export const DEFAULT_SETTINGS: Settings = {
   rateLimitBackoffMaxMs: 5 * 60 * 1000,
   sessionDurationMs: 5 * 60 * 60 * 1000,
   overloadRetryMax: 2,
+  newSessionUsageCutoffPercent: 95,
 };
 
 export function getSettings(): Settings {
@@ -50,6 +53,10 @@ export function getSettings(): Settings {
     ),
     sessionDurationMs: toStoredNumber(stored.sessionDurationMs, DEFAULT_SETTINGS.sessionDurationMs),
     overloadRetryMax: toStoredNumber(stored.overloadRetryMax, DEFAULT_SETTINGS.overloadRetryMax),
+    newSessionUsageCutoffPercent: toStoredNumber(
+      stored.newSessionUsageCutoffPercent,
+      DEFAULT_SETTINGS.newSessionUsageCutoffPercent,
+    ),
   };
 }
 
@@ -69,6 +76,9 @@ export function patchSettings(patch: Partial<Settings>): Settings {
   }
   if (patch.sessionDurationMs !== undefined) upsertSetting("sessionDurationMs", String(patch.sessionDurationMs));
   if (patch.overloadRetryMax !== undefined) upsertSetting("overloadRetryMax", String(patch.overloadRetryMax));
+  if (patch.newSessionUsageCutoffPercent !== undefined) {
+    upsertSetting("newSessionUsageCutoffPercent", String(patch.newSessionUsageCutoffPercent));
+  }
   return getSettings();
 }
 
