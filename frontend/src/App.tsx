@@ -33,7 +33,6 @@ import {
   ShieldAlert,
   Sun,
   Trash2,
-  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AlertMessage } from "@/components/alert-message";
@@ -67,9 +66,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Toaster } from "@/components/ui/sonner";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
 import { compactNumber, currency, durationMs, latencyMs, relativeTime } from "@/lib/format";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -1223,7 +1220,7 @@ function AccountSummaryCards({ accounts }: { accounts: Account[] }) {
       <EmptyState
         icon={<KeyRound />}
         title="No accounts yet"
-        description="Add a Claude credentials JSON or sign in through the Claude Code CLI to start balancing requests."
+        description="Sign in through the Claude Code CLI to start balancing requests."
       />
     );
   }
@@ -1588,7 +1585,7 @@ function AccountsTable({ accounts, compact = false }: { accounts: Account[]; com
       <EmptyState
         icon={<KeyRound />}
         title="No accounts yet"
-        description="Add a Claude credentials JSON or sign in through the Claude Code CLI to start balancing requests."
+        description="Sign in through the Claude Code CLI to start balancing requests."
       />
     );
   }
@@ -1604,6 +1601,7 @@ function AccountsTable({ accounts, compact = false }: { accounts: Account[]; com
             <th className="px-2 py-3 font-medium">Requests</th>
             <th className="px-2 py-3 font-medium">Quota</th>
             <th className="px-2 py-3 font-medium">Window reset</th>
+            <th className="px-2 py-3 font-medium">Usage</th>
             {!compact ? <th className="px-2 py-3 font-medium">Last used</th> : null}
             <th className="px-2 py-3 text-right font-medium">Actions</th>
           </tr>
@@ -1760,6 +1758,13 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     },
   });
   const blurNames = usePrivacyStore((state) => state.blurNames);
+  const usageWindows = account.usage ?? [];
+  const weekUsage = usageWindows.find((entry) => entry.kind === "week_all_models");
+  const sessionUsage = usageWindows.find((entry) => entry.kind === "session");
+  const usageResetTitle = usageWindows
+    .map((entry) => entry.resetsRaw)
+    .filter((raw): raw is string => Boolean(raw))
+    .join(" · ");
 
   async function togglePause() {
     await updateAccount.mutateAsync({ id: account.id, paused: !account.paused });
@@ -1796,11 +1801,6 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
       </td>
       <td className="px-2 py-3">
         <StatusBadge status={account.status} />
-        {account.tokenHealth.status !== "healthy" ? (
-          <div className={cn("mt-1 text-xs", tokenHealthClass(account.tokenHealth.status))}>
-            {account.tokenHealth.message}
-          </div>
-        ) : null}
       </td>
       <td className="px-2 py-3">{account.priority}</td>
       <td className="px-2 py-3">{compactNumber(account.requestCount)}</td>
@@ -1808,6 +1808,16 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
         <MiniQuotaBar remaining={account.rateLimitRemaining} />
       </td>
       <td className="px-2 py-3">{relativeTime(account.rateLimitReset)}</td>
+      <td className="px-2 py-3">
+        {usageWindows.length === 0 ? (
+          <span className="text-muted-foreground">—</span>
+        ) : (
+          <div className="flex flex-col leading-tight" title={usageResetTitle || undefined}>
+            <span className="font-semibold">{formatUsagePercent(weekUsage?.usedPercent)}</span>
+            <span className="text-muted-foreground text-xs">{formatUsagePercent(sessionUsage?.usedPercent)} session</span>
+          </div>
+        )}
+      </td>
       {!compact ? <td className="px-2 py-3">{relativeTime(account.lastUsed)}</td> : null}
       <td className="px-2 py-3">
         <div className="flex justify-end gap-1">
@@ -1820,7 +1830,7 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
           <Button type="button" variant="ghost" size="icon" onClick={editDeviceId} title="Device ID override">
             <Code2 className="size-4" />
           </Button>
-          {account.authType === "oauth_refresh" ? <ReauthAccountDialog account={account} /> : null}
+          <UsageProbeButton account={account} />
           <Button type="button" variant="ghost" size="icon" onClick={remove} title="Delete">
             <Trash2 className="size-4" />
           </Button>
@@ -1830,12 +1840,37 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
   );
 }
 
+function UsageProbeButton({ account }: { account: Account }) {
+  const utils = trpc.useUtils();
+  const probe = trpc.accounts.usageProbe.useMutation({
+    onSuccess: async (res) => {
+      await utils.accounts.list.invalidate();
+      await utils.stats.invalidate();
+      toast.success(
+        res.outcome === "refreshed" ? "Token refreshed" : res.outcome === "valid_noop" ? "Token still valid" : "Usage checked",
+      );
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      title="Refresh token & usage"
+      onClick={() => probe.mutate({ id: account.id })}
+      disabled={probe.isPending}
+    >
+      {probe.isPending ? <Loader2 className="size-4 animate-spin" /> : <Gauge className="size-4" />}
+    </Button>
+  );
+}
+
 function AddAccountDialog() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [priority, setPriority] = useState(0);
   const [deviceIdOverride, setDeviceIdOverride] = useState("");
-  const [credentialsText, setCredentialsText] = useState("");
   const [claudeCode, setClaudeCode] = useState("");
   const [claudeCodeSession, setClaudeCodeSession] = useState<{
     authUrl: string;
@@ -1845,20 +1880,6 @@ function AddAccountDialog() {
   const [error, setError] = useState<string | null>(null);
   const utils = trpc.useUtils();
 
-  const importAccount = trpc.accounts.import.useMutation({
-    onSuccess: async () => {
-      await afterAccountAdded(utils);
-      setOpen(false);
-      setCredentialsText("");
-      setClaudeCode("");
-      setClaudeCodeSession(null);
-      setName("");
-      setPriority(0);
-      setDeviceIdOverride("");
-      toast.success("Account imported");
-    },
-    onError: (mutationError) => setError(mutationError.message),
-  });
   const beginClaudeCodeLogin = trpc.accounts.claudeCodeLoginBegin.useMutation({
     onSuccess: (result) => {
       setClaudeCodeSession(result);
@@ -1870,7 +1891,6 @@ function AddAccountDialog() {
     onSuccess: async () => {
       await afterAccountAdded(utils);
       setOpen(false);
-      setCredentialsText("");
       setClaudeCode("");
       setClaudeCodeSession(null);
       setName("");
@@ -1888,23 +1908,6 @@ function AddAccountDialog() {
       retry: false,
     },
   );
-
-  async function submitCredentials(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    try {
-      const credentials: unknown = JSON.parse(credentialsText);
-      await importAccount.mutateAsync({
-        name: name || undefined,
-        priority,
-        deviceIdOverride: deviceIdOverride || null,
-        credentials,
-      });
-    } catch (parseError) {
-      const message = parseError instanceof Error ? parseError.message : "Invalid credentials JSON";
-      setError(message);
-    }
-  }
 
   async function beginClaudeCode() {
     setError(null);
@@ -1929,7 +1932,7 @@ function AddAccountDialog() {
     });
   }
 
-  const busy = importAccount.isPending || beginClaudeCodeLogin.isPending || completeClaudeCodeLogin.isPending;
+  const busy = beginClaudeCodeLogin.isPending || completeClaudeCodeLogin.isPending;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -1942,7 +1945,7 @@ function AddAccountDialog() {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Add Claude account</DialogTitle>
-          <DialogDescription>Import Claude Code credentials or sign in through the Claude Code CLI.</DialogDescription>
+          <DialogDescription>Sign in through the Claude Code CLI to add an account.</DialogDescription>
         </DialogHeader>
         <AlertMessage message={error} />
         <div className="grid gap-2">
@@ -1969,175 +1972,65 @@ function AddAccountDialog() {
             placeholder="Optional x-device-id"
           />
         </div>
-        <Tabs defaultValue="json">
-          <TabsList>
-            <TabsTrigger value="json">Credentials JSON</TabsTrigger>
-            <TabsTrigger value="cli">Claude Code CLI</TabsTrigger>
-          </TabsList>
-          <TabsContent value="json">
-            <form className="grid gap-4" onSubmit={submitCredentials}>
-              <div className="grid gap-2">
-                <Label htmlFor="credentials">Credentials JSON</Label>
-                <Textarea
-                  id="credentials"
-                  value={credentialsText}
-                  onChange={(event) => setCredentialsText(event.target.value)}
-                  placeholder='{"claudeAiOauth":{"accessToken":"...","refreshToken":"..."}}'
-                />
-              </div>
-              <DialogFooter>
-                <Button type="submit" disabled={busy || credentialsText.trim().length === 0}>
-                  {busy ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
-                  Import
-                </Button>
-              </DialogFooter>
-            </form>
-          </TabsContent>
-          <TabsContent value="cli">
-            <form className="grid gap-4" onSubmit={submitClaudeCodeLogin}>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Button type="button" variant="outline" onClick={beginClaudeCode} disabled={busy}>
-                  {beginClaudeCodeLogin.isPending ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-                  Generate login link
-                </Button>
-                {claudeCodeSession ? <CopyButton value={claudeCodeSession.authUrl} label="Copy URL" /> : null}
-              </div>
-              {claudeCodeSession ? (
-                <div className="bg-muted text-muted-foreground rounded-md px-3 py-2 text-xs break-all">{claudeCodeSession.authUrl}</div>
-              ) : null}
-              {claudeCodeSession ? (
-                <div className="grid gap-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <Label htmlFor="claude-code-tmux">Tmux attach</Label>
-                    <CopyButton
-                      value={claudeCodeLoginStatus.data?.tmuxAttachCommand ?? claudeCodeSession.tmuxAttachCommand}
-                      label="Copy command"
-                    />
-                  </div>
-                  <pre
-                    id="claude-code-tmux"
-                    aria-label="Tmux attach command"
-                    className="bg-muted text-muted-foreground overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap"
-                  >
-                    {claudeCodeLoginStatus.data?.tmuxAttachCommand ?? claudeCodeSession.tmuxAttachCommand}
-                  </pre>
-                </div>
-              ) : null}
-              {claudeCodeSession ? (
-                <div className="grid gap-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <Label htmlFor="claude-code-output">Claude Code output</Label>
-                    <span className="text-muted-foreground text-xs">{claudeCodeLoginStatus.data?.status ?? "starting"}</span>
-                  </div>
-                  <pre
-                    id="claude-code-output"
-                    aria-label="Claude Code output"
-                    className="bg-muted text-muted-foreground max-h-48 overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap"
-                  >
-                    {claudeCodeLoginStatus.error?.message ||
-                      claudeCodeLoginStatus.data?.output ||
-                      "Waiting for Claude Code output..."}
-                  </pre>
-                </div>
-              ) : null}
-              <div className="grid gap-2">
-                <Label htmlFor="claude-code-login-code">Claude code</Label>
-                <Input
-                  id="claude-code-login-code"
-                  value={claudeCode}
-                  onChange={(event) => setClaudeCode(event.target.value)}
-                  placeholder="Paste code from Claude"
-                />
-              </div>
-              <DialogFooter>
-                <Button type="submit" disabled={busy || !claudeCodeSession || claudeCode.trim().length === 0}>
-                  {completeClaudeCodeLogin.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                  Add account
-                </Button>
-              </DialogFooter>
-            </form>
-          </TabsContent>
-        </Tabs>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function ReauthAccountDialog({ account }: { account: Account }) {
-  const [open, setOpen] = useState(false);
-  const [code, setCode] = useState("");
-  const [session, setSession] = useState<{ authUrl: string; sessionId: string } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const utils = trpc.useUtils();
-  const begin = trpc.accounts.oauthReauthBegin.useMutation({
-    onSuccess: (result) => {
-      setSession(result);
-      window.open(result.authUrl, "_blank", "noopener,noreferrer");
-    },
-    onError: (mutationError) => setError(mutationError.message),
-  });
-  const complete = trpc.accounts.oauthReauthComplete.useMutation({
-    onSuccess: async () => {
-      await afterAccountAdded(utils);
-      setOpen(false);
-      setCode("");
-      setSession(null);
-      toast.success("Account re-authenticated");
-    },
-    onError: (mutationError) => setError(mutationError.message),
-  });
-  const busy = begin.isPending || complete.isPending;
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!session) {
-      setError("Generate a login link first.");
-      return;
-    }
-    setError(null);
-    await complete.mutateAsync({ sessionId: session.sessionId, code });
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button type="button" variant="ghost" size="icon" title="Re-authenticate">
-          <KeyRound className={cn("size-4", account.tokenHealth.requiresReauth && "text-sky-500")} />
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Re-authenticate account</DialogTitle>
-          <DialogDescription>This updates tokens for {account.name} without resetting its stats or priority.</DialogDescription>
-        </DialogHeader>
-        <AlertMessage message={error} />
-        <div className={cn("rounded-md border px-3 py-2 text-sm", tokenHealthClass(account.tokenHealth.status))}>
-          {account.tokenHealth.message}
-        </div>
-        <form className="grid gap-4" onSubmit={submit}>
+        <form className="grid gap-4" onSubmit={submitClaudeCodeLogin}>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Button type="button" variant="outline" onClick={() => begin.mutate({ id: account.id })} disabled={busy}>
-              {begin.isPending ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+            <Button type="button" variant="outline" onClick={beginClaudeCode} disabled={busy}>
+              {beginClaudeCodeLogin.isPending ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
               Generate login link
             </Button>
-            {session ? <CopyButton value={session.authUrl} label="Copy URL" /> : null}
+            {claudeCodeSession ? <CopyButton value={claudeCodeSession.authUrl} label="Copy URL" /> : null}
           </div>
-          {session ? (
-            <div className="bg-muted text-muted-foreground rounded-md px-3 py-2 text-xs break-all">{session.authUrl}</div>
+          {claudeCodeSession ? (
+            <div className="bg-muted text-muted-foreground rounded-md px-3 py-2 text-xs break-all">{claudeCodeSession.authUrl}</div>
+          ) : null}
+          {claudeCodeSession ? (
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="claude-code-tmux">Tmux attach</Label>
+                <CopyButton
+                  value={claudeCodeLoginStatus.data?.tmuxAttachCommand ?? claudeCodeSession.tmuxAttachCommand}
+                  label="Copy command"
+                />
+              </div>
+              <pre
+                id="claude-code-tmux"
+                aria-label="Tmux attach command"
+                className="bg-muted text-muted-foreground overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap"
+              >
+                {claudeCodeLoginStatus.data?.tmuxAttachCommand ?? claudeCodeSession.tmuxAttachCommand}
+              </pre>
+            </div>
+          ) : null}
+          {claudeCodeSession ? (
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="claude-code-output">Claude Code output</Label>
+                <span className="text-muted-foreground text-xs">{claudeCodeLoginStatus.data?.status ?? "starting"}</span>
+              </div>
+              <pre
+                id="claude-code-output"
+                aria-label="Claude Code output"
+                className="bg-muted text-muted-foreground max-h-48 overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap"
+              >
+                {claudeCodeLoginStatus.error?.message ||
+                  claudeCodeLoginStatus.data?.output ||
+                  "Waiting for Claude Code output..."}
+              </pre>
+            </div>
           ) : null}
           <div className="grid gap-2">
-            <Label htmlFor={`reauth-code-${account.id}`}>Claude code</Label>
+            <Label htmlFor="claude-code-login-code">Claude code</Label>
             <Input
-              id={`reauth-code-${account.id}`}
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              placeholder="code#state"
+              id="claude-code-login-code"
+              value={claudeCode}
+              onChange={(event) => setClaudeCode(event.target.value)}
+              placeholder="Paste code from Claude"
             />
           </div>
           <DialogFooter>
-            <Button type="submit" disabled={busy || !session || code.trim().length === 0}>
-              {complete.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-              Update tokens
+            <Button type="submit" disabled={busy || !claudeCodeSession || claudeCode.trim().length === 0}>
+              {completeClaudeCodeLogin.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+              Add account
             </Button>
           </DialogFooter>
         </form>
@@ -2534,15 +2427,6 @@ function numberFromInput(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function tokenHealthClass(status: Account["tokenHealth"]["status"]): string {
-  if (status === "expired" || status === "no_refresh_token") {
-    return "text-red-600 dark:text-red-400";
-  }
-  if (status === "critical") {
-    return "text-orange-600 dark:text-orange-400";
-  }
-  if (status === "warning") {
-    return "text-amber-600 dark:text-amber-400";
-  }
-  return "text-muted-foreground";
+function formatUsagePercent(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : `${Math.round(value)}%`;
 }

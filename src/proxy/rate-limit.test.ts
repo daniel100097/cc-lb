@@ -6,15 +6,19 @@ for (const suffix of ["", "-wal", "-shm"]) {
   rmSync(`${dbPath}${suffix}`, { force: true });
 }
 process.env.DB_PATH = dbPath;
+const accountsDir = `/tmp/cc-lb-ratelimit-accounts-${process.pid}`;
+process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
 const { applyCooldown, MIN_COOLDOWN_FLOOR_MS, parseRateLimit } = await import("./rate-limit");
 const { createAccount, getAccount, updateAccount } = await import("../db/accounts");
 const { DEFAULT_SETTINGS } = await import("../db/settings");
+const { seedAccountCredentials } = await import("../testing/seed-credentials");
 
 afterAll(() => {
   for (const suffix of ["", "-wal", "-shm"]) {
     rmSync(`${dbPath}${suffix}`, { force: true });
   }
+  rmSync(accountsDir, { recursive: true, force: true });
 });
 
 const now = 1_800_000_000_000;
@@ -135,10 +139,11 @@ describe("applyCooldown", () => {
     accountSeq += 1;
     const account = createAccount({
       name: `Cooldown ${process.pid}-${accountSeq}`,
-      access_token: `cooldown-access-${accountSeq}`,
-      refresh_token: `cooldown-refresh-${accountSeq}`,
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
+    });
+    seedAccountCredentials(account.id, {
+      accessToken: `cooldown-access-${accountSeq}`,
+      refreshToken: `cooldown-refresh-${accountSeq}`,
+      expiresAt: now + 3_600_000,
     });
     if (overrides.consecutive_rate_limits !== undefined) {
       updateAccount(account.id, { consecutive_rate_limits: overrides.consecutive_rate_limits });

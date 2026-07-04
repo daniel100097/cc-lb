@@ -2,6 +2,11 @@ import { rmSync } from "node:fs";
 
 const dbPath = process.env.DB_PATH ?? "/tmp/cc-lb-e2e.db";
 process.env.DB_PATH = dbPath;
+// Seed and the e2e server run as separate processes and neither is passed
+// CLAUDE_ACCOUNTS_DIR, so both fall back to the same ./data/claude-accounts
+// root — write the seeded credentials where the server will read them.
+const accountsDir = process.env.CLAUDE_ACCOUNTS_DIR ?? "./data/claude-accounts";
+process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
 for (const suffix of ["", "-wal", "-shm"]) {
   rmSync(`${dbPath}${suffix}`, { force: true });
@@ -10,25 +15,28 @@ for (const suffix of ["", "-wal", "-shm"]) {
 const { createAccount, updateAccount } = await import("../../src/db/accounts");
 const { logRequest, updateRequestLogUsage } = await import("../../src/db/request-log");
 const { patchSettings } = await import("../../src/db/settings");
+const { seedAccountCredentials } = await import("../../src/testing/seed-credentials");
 
 const now = Date.now();
 
 const primary = createAccount({
   name: "Primary healthy",
-  access_token: "primary-access",
-  refresh_token: "primary-refresh",
-  expires_at: now + 24 * 60 * 60 * 1000,
-  refresh_token_issued_at: now - 10 * 24 * 60 * 60 * 1000,
   priority: 0,
+});
+seedAccountCredentials(primary.id, {
+  accessToken: "primary-access",
+  refreshToken: "primary-refresh",
+  expiresAt: now + 24 * 60 * 60 * 1000,
 });
 
 const limited = createAccount({
   name: "Rate limited",
-  access_token: "limited-access",
-  refresh_token: "limited-refresh",
-  expires_at: now + 24 * 60 * 60 * 1000,
-  refresh_token_issued_at: now - 10 * 24 * 60 * 60 * 1000,
   priority: 1,
+});
+seedAccountCredentials(limited.id, {
+  accessToken: "limited-access",
+  refreshToken: "limited-refresh",
+  expiresAt: now + 24 * 60 * 60 * 1000,
 });
 
 updateAccount(limited.id, {
@@ -39,13 +47,14 @@ updateAccount(limited.id, {
   consecutive_rate_limits: 1,
 });
 
-createAccount({
+// No credentials file is seeded for this account: the server derives
+// "needs_reauth" from the missing credentials, and the explicit flag keeps it
+// out of the available pool.
+const needsReauth = createAccount({
   name: "Needs reauth",
-  access_token: null,
-  refresh_token: null,
-  expires_at: null,
   priority: 2,
 });
+updateAccount(needsReauth.id, { needs_reauth: 1 });
 
 updateAccount(primary.id, {
   request_count: 3,

@@ -1,22 +1,33 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const dbPath = `/tmp/cc-lb-proxy-test-${process.pid}.db`;
 for (const suffix of ["", "-wal", "-shm"]) {
   rmSync(`${dbPath}${suffix}`, { force: true });
 }
 process.env.DB_PATH = dbPath;
+const accountsDir = `/tmp/cc-lb-proxy-accounts-${process.pid}`;
+process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
 const { createAccount, getAccount, listAccounts, updateAccount } = await import("../db/accounts");
 const { DEVICE_ID_HEADER } = await import("../anthropic/headers");
 const { listRequests } = await import("../db/request-log");
 const { getSticky, setSticky } = await import("../db/sticky");
 const { handleProxy } = await import("./handler");
+const { seedAccountCredentials } = await import("../testing/seed-credentials");
+const { accountConfigDir } = await import("../anthropic/account-config");
+
+function writeAccountClaudeJson(accountId: string, body: Record<string, unknown>): void {
+  mkdirSync(accountConfigDir(accountId), { recursive: true });
+  writeFileSync(join(accountConfigDir(accountId), ".claude.json"), JSON.stringify(body));
+}
 
 afterAll(() => {
   for (const suffix of ["", "-wal", "-shm"]) {
     rmSync(`${dbPath}${suffix}`, { force: true });
   }
+  rmSync(accountsDir, { recursive: true, force: true });
 });
 
 describe("handleProxy", () => {
@@ -38,19 +49,21 @@ describe("handleProxy", () => {
     }
     const home = createAccount({
       name: "Home",
-      access_token: "home-access",
-      refresh_token: "home-refresh",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       priority: 0,
+    });
+    seedAccountCredentials(home.id, {
+      accessToken: "home-access",
+      refreshToken: "home-refresh",
+      expiresAt: now + 3_600_000,
     });
     const fallback = createAccount({
       name: "Fallback",
-      access_token: "fallback-access",
-      refresh_token: "fallback-refresh",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       priority: 1,
+    });
+    seedAccountCredentials(fallback.id, {
+      accessToken: "fallback-access",
+      refreshToken: "fallback-refresh",
+      expiresAt: now + 3_600_000,
     });
     updateAccount(home.id, { rate_limited_until: now + 60_000 });
     setSticky("session-abc", home.id, now);
@@ -98,13 +111,14 @@ describe("handleProxy", () => {
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
     }
-    createAccount({
+    const acct = createAccount({
       name: "Device override inactive",
-      access_token: "device-access-a",
-      refresh_token: "device-refresh-a",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       device_id_override: "account-device",
+    });
+    seedAccountCredentials(acct.id, {
+      accessToken: "device-access-a",
+      refreshToken: "device-refresh-a",
+      expiresAt: now + 3_600_000,
     });
 
     const outboundHeaders: Headers[] = [];
@@ -139,13 +153,14 @@ describe("handleProxy", () => {
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
     }
-    createAccount({
+    const acct = createAccount({
       name: "Device override active",
-      access_token: "device-access-b",
-      refresh_token: "device-refresh-b",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       device_id_override: "account-device",
+    });
+    seedAccountCredentials(acct.id, {
+      accessToken: "device-access-b",
+      refreshToken: "device-refresh-b",
+      expiresAt: now + 3_600_000,
     });
 
     const { headers: outboundHeaders, bodies: outboundBodies, restore } = captureFetch(() =>
@@ -177,13 +192,14 @@ describe("handleProxy", () => {
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
     }
-    createAccount({
+    const acct = createAccount({
       name: "Device override header only",
-      access_token: "device-access-c",
-      refresh_token: "device-refresh-c",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       device_id_override: "account-device",
+    });
+    seedAccountCredentials(acct.id, {
+      accessToken: "device-access-c",
+      refreshToken: "device-refresh-c",
+      expiresAt: now + 3_600_000,
     });
 
     const { headers: outboundHeaders, bodies: outboundBodies, restore } = captureFetch(() =>
@@ -214,13 +230,14 @@ describe("handleProxy", () => {
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
     }
-    createAccount({
+    const acct = createAccount({
       name: "Device override both",
-      access_token: "device-access-d",
-      refresh_token: "device-refresh-d",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       device_id_override: "account-device",
+    });
+    seedAccountCredentials(acct.id, {
+      accessToken: "device-access-d",
+      refreshToken: "device-refresh-d",
+      expiresAt: now + 3_600_000,
     });
 
     const { headers: outboundHeaders, bodies: outboundBodies, restore } = captureFetch(() =>
@@ -257,22 +274,24 @@ describe("handleProxy", () => {
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
     }
-    createAccount({
+    const failoverA = createAccount({
       name: "Failover device A",
-      access_token: "failover-access-a",
-      refresh_token: "failover-refresh-a",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       priority: 0,
       device_id_override: "device-a",
     });
-    createAccount({
+    seedAccountCredentials(failoverA.id, {
+      accessToken: "failover-access-a",
+      refreshToken: "failover-refresh-a",
+      expiresAt: now + 3_600_000,
+    });
+    const failoverB = createAccount({
       name: "Failover device B",
-      access_token: "failover-access-b",
-      refresh_token: "failover-refresh-b",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       priority: 1,
+    });
+    seedAccountCredentials(failoverB.id, {
+      accessToken: "failover-access-b",
+      refreshToken: "failover-refresh-b",
+      expiresAt: now + 3_600_000,
     });
 
     let call = 0;
@@ -308,10 +327,11 @@ describe("handleProxy", () => {
     }
     const account = createAccount({
       name: "Account uuid fill",
-      access_token: "uuid-access-a",
-      refresh_token: "uuid-refresh-a",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
+    });
+    seedAccountCredentials(account.id, {
+      accessToken: "uuid-access-a",
+      refreshToken: "uuid-refresh-a",
+      expiresAt: now + 3_600_000,
     });
 
     const userId = JSON.stringify({
@@ -345,6 +365,46 @@ describe("handleProxy", () => {
     }
   });
 
+  test("patches account_uuid and device_id to the account's real Claude folder identity", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "Real folder identity" });
+    seedAccountCredentials(account.id, { accessToken: "real-access", refreshToken: "real-refresh", expiresAt: now + 3_600_000 });
+    // Claude Code's real identity, as adopted from a login dir.
+    writeAccountClaudeJson(account.id, {
+      hasCompletedOnboarding: true,
+      machineID: "real-machine-id-hash",
+      accountUuid: "64f27862-b305-4e53-9ca5-f913b529f556",
+    });
+
+    const userId = JSON.stringify({ device_id: "client-device", account_uuid: "client-uuid", session_id: "sess-1" });
+    const { bodies: outboundBodies, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-real-identity", messages: [], metadata: { user_id: userId } }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      const sentUserId = JSON.parse(decodeBody(outboundBodies[0]).metadata.user_id);
+      // account_uuid is the real Anthropic uuid from .claude.json, NOT the internal account.id.
+      expect(sentUserId.account_uuid).toBe("64f27862-b305-4e53-9ca5-f913b529f556");
+      expect(sentUserId.account_uuid).not.toBe(account.id);
+      expect(sentUserId.device_id).toBe("real-machine-id-hash");
+    } finally {
+      restore();
+    }
+  });
+
   test("rewrites device_id inside the user_id envelope only when the account has an override", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
@@ -352,11 +412,12 @@ describe("handleProxy", () => {
     }
     const account = createAccount({
       name: "Envelope device override",
-      access_token: "uuid-access-b",
-      refresh_token: "uuid-refresh-b",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       device_id_override: "account-device",
+    });
+    seedAccountCredentials(account.id, {
+      accessToken: "uuid-access-b",
+      refreshToken: "uuid-refresh-b",
+      expiresAt: now + 3_600_000,
     });
 
     const userId = JSON.stringify({ device_id: "client-device", account_uuid: "old-uuid", session_id: "s-1" });
@@ -391,10 +452,11 @@ describe("handleProxy", () => {
     }
     const account = createAccount({
       name: "Bare account uuid",
-      access_token: "uuid-access-c",
-      refresh_token: "uuid-refresh-c",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
+    });
+    seedAccountCredentials(account.id, {
+      accessToken: "uuid-access-c",
+      refreshToken: "uuid-refresh-c",
+      expiresAt: now + 3_600_000,
     });
 
     const { bodies: outboundBodies, restore } = captureFetch(() =>
@@ -432,19 +494,21 @@ describe("handleProxy", () => {
     }
     const first = createAccount({
       name: "Uuid failover A",
-      access_token: "uuid-failover-a",
-      refresh_token: "uuid-failover-ra",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       priority: 0,
+    });
+    seedAccountCredentials(first.id, {
+      accessToken: "uuid-failover-a",
+      refreshToken: "uuid-failover-ra",
+      expiresAt: now + 3_600_000,
     });
     const second = createAccount({
       name: "Uuid failover B",
-      access_token: "uuid-failover-b",
-      refresh_token: "uuid-failover-rb",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       priority: 1,
+    });
+    seedAccountCredentials(second.id, {
+      accessToken: "uuid-failover-b",
+      refreshToken: "uuid-failover-rb",
+      expiresAt: now + 3_600_000,
     });
 
     let call = 0;
@@ -484,19 +548,21 @@ describe("handleProxy", () => {
     }
     const creditless = createAccount({
       name: "Out of credits",
-      access_token: "credits-access-a",
-      refresh_token: "credits-refresh-a",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       priority: 0,
+    });
+    seedAccountCredentials(creditless.id, {
+      accessToken: "credits-access-a",
+      refreshToken: "credits-refresh-a",
+      expiresAt: now + 3_600_000,
     });
     const fallback = createAccount({
       name: "Credits fallback",
-      access_token: "credits-access-b",
-      refresh_token: "credits-refresh-b",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
       priority: 1,
+    });
+    seedAccountCredentials(fallback.id, {
+      accessToken: "credits-access-b",
+      refreshToken: "credits-refresh-b",
+      expiresAt: now + 3_600_000,
     });
 
     let call = 0;
@@ -545,10 +611,11 @@ describe("handleProxy", () => {
     }
     const reauth = createAccount({
       name: "Needs reauth pool",
-      access_token: "reauth-access",
-      refresh_token: "reauth-refresh",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
+    });
+    seedAccountCredentials(reauth.id, {
+      accessToken: "reauth-access",
+      refreshToken: "reauth-refresh",
+      expiresAt: now + 3_600_000,
     });
     updateAccount(reauth.id, { needs_reauth: 1 });
 
@@ -575,10 +642,11 @@ describe("handleProxy", () => {
     }
     const limited = createAccount({
       name: "Rate limited pool",
-      access_token: "limited-access",
-      refresh_token: "limited-refresh",
-      expires_at: now + 3_600_000,
-      refresh_token_issued_at: now,
+    });
+    seedAccountCredentials(limited.id, {
+      accessToken: "limited-access",
+      refreshToken: "limited-refresh",
+      expiresAt: now + 3_600_000,
     });
     updateAccount(limited.id, { rate_limited_until: now + 60_000 });
 

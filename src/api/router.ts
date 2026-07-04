@@ -1,8 +1,14 @@
 import { z } from "zod";
-import { beginOAuth, completeOAuth, consumeOAuthSession } from "../anthropic/oauth";
 import { beginClaudeCodeLogin, completeClaudeCodeLogin, getClaudeCodeLoginStatus } from "../anthropic/claude-code-cli";
-import { parseCredentials } from "../anthropic/credentials";
-import { checkRefreshTokenHealth } from "../anthropic/token-health";
+import {
+  accountHasCredentials,
+  adoptLoginConfigDir,
+  deleteAccountConfigDir,
+  readCredentialsFile,
+} from "../anthropic/account-config";
+import { probeAccount, probeTmuxSessionName } from "../anthropic/account-probe";
+import { killTmuxSession } from "../anthropic/tmux-driver";
+import type { UsageWindow } from "../anthropic/usage-panel";
 import { STRATEGIES } from "../balancer/strategies";
 import { isAvailable, toState } from "../balancer/types";
 import {
@@ -30,8 +36,6 @@ import {
   type AnalyticsRange,
   type UsageSummary,
 } from "../db/analytics";
-import { db } from "../db/client";
-import { getOAuthSession } from "../db/oauth-sessions";
 import {
   countOutcomesSince,
   countRequestsSince,
@@ -81,15 +85,6 @@ const accountPatchSchema = z
     paused: z.boolean().optional(),
     pauseReason: z.string().trim().max(300).nullable().optional(),
     needsReauth: z.boolean().optional(),
-  })
-  .strict();
-
-const importCredentialsSchema = z
-  .object({
-    name: z.string().trim().max(120).optional(),
-    priority: z.number().int().min(0).max(10_000).optional(),
-    deviceIdOverride: z.string().trim().max(200).nullable().optional(),
-    credentials: z.unknown(),
   })
   .strict();
 
@@ -186,73 +181,39 @@ export const appRouter = router({
   accounts: router({
     list: publicProcedure.query(() => listAccounts().map((account) => toPublicAccount(account))),
 
-    import: publicProcedure.input(importCredentialsSchema).mutation(({ input }) => {
-      const parsed = parseCredentials(input.credentials, input.name);
-      const account = createAccount({
-        ...parsed,
-        priority: input.priority ?? parsed.priority,
-        device_id_override: normalizeOptionalString(input.deviceIdOverride),
-      });
-      return toPublicAccount(account);
-    }),
-
     claudeCodeLoginBegin: publicProcedure.mutation(() => beginClaudeCodeLogin()),
 
     claudeCodeLoginStatus: publicProcedure.input(claudeCodeLoginStatusSchema).query(({ input }) =>
       getClaudeCodeLoginStatus(input.sessionId),
     ),
 
+    // Account creation goes through the Claude Code CLI only. The login session's
+    // config dir (with the CLI-written .credentials.json) is adopted into the
+    // account's persistent dir; Claude Code owns tokens from there on.
     claudeCodeLoginComplete: publicProcedure.input(claudeCodeLoginCompleteSchema).mutation(async ({ input }) => {
       const login = await completeClaudeCodeLogin(input.sessionId, input.code);
-      const parsed = parseCredentials(login.credentials, input.name);
       const account = createAccount({
-        ...parsed,
-        priority: input.priority ?? parsed.priority,
+        name: input.name?.trim() || "Claude Code account",
+        priority: input.priority ?? 0,
         device_id_override: normalizeOptionalString(input.deviceIdOverride),
       });
+      adoptLoginConfigDir(account.id, login.configDir);
+      void probeAccount(account.id, "seed").catch(() => {});
       return toPublicAccount(account);
     }),
 
-    oauthReauthBegin: publicProcedure.input(z.object({ id: z.string().min(1) }).strict()).mutation(({ input }) => {
+    // Boot the CLI + /usage to refresh the token and capture utilization on demand.
+    usageProbe: publicProcedure.input(z.object({ id: z.string().min(1) }).strict()).mutation(async ({ input }) => {
+      if (!getAccount(input.id)) throw new Error("account not found");
+      const result = await probeAccount(input.id, "manual");
       const account = getAccount(input.id);
       if (!account) throw new Error("account not found");
-      return beginOAuth({
-        accountId: account.id,
-        name: account.name,
-        priority: account.priority,
-      });
+      return {
+        outcome: result.outcome,
+        usage: result.usage?.windows ?? null,
+        account: toPublicAccount(account),
+      };
     }),
-
-    oauthReauthComplete: publicProcedure
-      .input(z.object({ sessionId: z.string().min(1), code: z.string().min(1) }).strict())
-      .mutation(async ({ input }) => {
-        const pendingSession = getOAuthSession(input.sessionId);
-        if (!pendingSession) throw new Error("oauth session expired or not found");
-        const accountId = pendingSession.account_id;
-        if (!accountId) throw new Error("oauth session is not a reauth session");
-        if (!getAccount(accountId)) throw new Error("account not found");
-        const completion = await completeOAuth(input.sessionId, input.code);
-        const { tokens, session } = completion;
-        if (session.account_id !== accountId) throw new Error("oauth session target mismatch");
-        const account = db.transaction(() => {
-          updateAccount(accountId, {
-            auth_type: "oauth_refresh",
-            access_token: tokens.accessToken,
-            refresh_token: tokens.refreshToken,
-            expires_at: tokens.expiresAt,
-            refresh_token_issued_at: Date.now(),
-            scopes: tokens.scopes,
-            needs_reauth: 0,
-            rate_limited_until: null,
-            consecutive_rate_limits: 0,
-          });
-          const updated = getAccount(accountId);
-          if (!updated) throw new Error("account not found");
-          consumeOAuthSession(input.sessionId);
-          return updated;
-        })();
-        return toPublicAccount(account);
-      }),
 
     update: publicProcedure.input(accountPatchSchema).mutation(({ input }) => {
       const patch: AccountPatch = {};
@@ -274,6 +235,8 @@ export const appRouter = router({
     }),
 
     delete: publicProcedure.input(z.object({ id: z.string().min(1) }).strict()).mutation(({ input }) => {
+      void killTmuxSession(probeTmuxSessionName(input.id)).catch(() => {});
+      deleteAccountConfigDir(input.id);
       deleteAccount(input.id);
       return { ok: true };
     }),
@@ -468,13 +431,15 @@ export const appRouter = router({
 export type AppRouter = typeof appRouter;
 
 function toPublicAccount(account: Account, now = Date.now()) {
-  const tokenHealth = checkRefreshTokenHealth(account, now);
   const state = toState(account, now);
   const available = isAvailable(state, now);
+  // Tokens live in the Claude-Code-managed credentials file, not the DB.
+  const credentials = readCredentialsFile(account.id);
+  const hasCredentials = credentials !== null || accountHasCredentials(account.id);
   const status =
     account.paused === 1
       ? "paused"
-      : account.needs_reauth === 1 || tokenHealth.status === "expired" || tokenHealth.status === "no_refresh_token"
+      : account.needs_reauth === 1 || !hasCredentials
         ? "needs_reauth"
         : account.rate_limited_until !== null && account.rate_limited_until > now
           ? "rate_limited"
@@ -493,19 +458,35 @@ function toPublicAccount(account: Account, now = Date.now()) {
     sessionRequestCount: account.session_request_count,
     createdAt: account.created_at,
     lastUsed: account.last_used,
-    expiresAt: account.expires_at,
-    scopes: account.scopes,
+    expiresAt: credentials?.expiresAt ?? null,
+    scopes: credentials?.scopes ?? null,
+    hasCredentials,
     rateLimitStatus: account.rate_limit_status,
     rateLimitReset: account.rate_limit_reset,
     rateLimitRemaining: account.rate_limit_remaining,
     rateLimitedUntil: account.rate_limited_until,
     consecutiveRateLimits: account.consecutive_rate_limits,
-    needsReauth: account.needs_reauth === 1 || tokenHealth.requiresReauth,
+    needsReauth: account.needs_reauth === 1 || !hasCredentials,
     paused: account.paused === 1,
     pauseReason: account.pause_reason,
-    tokenHealth,
+    usage: parseUsageWindows(account.usage_windows),
+    usageCheckedAt: account.usage_checked_at,
     available,
   };
+}
+
+function parseUsageWindows(raw: string | null): UsageWindow[] | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isUsageWindow) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isUsageWindow(value: unknown): value is UsageWindow {
+  return typeof value === "object" && value !== null && "kind" in value && "usedPercent" in value;
 }
 
 function normalizeOptionalString(value: string | null | undefined): string | null {

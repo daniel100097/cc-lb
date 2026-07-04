@@ -6,6 +6,8 @@ for (const suffix of ["", "-wal", "-shm"]) {
   rmSync(`${dbPath}${suffix}`, { force: true });
 }
 process.env.DB_PATH = dbPath;
+const accountsDir = `/tmp/cc-lb-request-log-accounts-${process.pid}`;
+process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
 const { createAccount } = await import("./accounts");
 const {
@@ -15,21 +17,24 @@ const {
   logRequest,
   updateRequestLogUsage,
 } = await import("./request-log");
+const { seedAccountCredentials } = await import("../testing/seed-credentials");
 
 afterAll(() => {
   for (const suffix of ["", "-wal", "-shm"]) {
     rmSync(`${dbPath}${suffix}`, { force: true });
   }
+  rmSync(accountsDir, { recursive: true, force: true });
 });
 
 describe("request log repository", () => {
   test("inserts, updates usage, joins account names, and filters", () => {
     const account = createAccount({
       name: "Primary",
-      access_token: "access",
-      refresh_token: "refresh",
-      expires_at: Date.now() + 60_000,
-      refresh_token_issued_at: Date.now(),
+    });
+    seedAccountCredentials(account.id, {
+      accessToken: "access",
+      refreshToken: "refresh",
+      expiresAt: Date.now() + 60_000,
     });
     const now = 10_000_000_000_000 + process.pid;
     const id = logRequest({

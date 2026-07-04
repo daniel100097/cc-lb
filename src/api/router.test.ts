@@ -1,62 +1,63 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 
 const dbPath = `/tmp/cc-lb-router-test-${process.pid}.db`;
 const claudeConfigDir = `/tmp/cc-lb-router-claude-${process.pid}`;
+const accountsDir = `/tmp/cc-lb-router-accounts-${process.pid}`;
 for (const suffix of ["", "-wal", "-shm"]) {
   rmSync(`${dbPath}${suffix}`, { force: true });
 }
 rmSync(claudeConfigDir, { force: true, recursive: true });
+rmSync(accountsDir, { force: true, recursive: true });
 process.env.DB_PATH = dbPath;
 process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
+process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
 const { appRouter } = await import("./router");
-const { createAccount, updateAccount } = await import("../db/accounts");
+const { createAccount, deleteAccount, listAccounts, updateAccount } = await import("../db/accounts");
 const { logRequest, updateRequestLogUsage } = await import("../db/request-log");
 const { resetClaudeCodeLoginSessionsForTests } = await import("../anthropic/claude-code-cli");
+const { resetProbeStateForTests } = await import("../anthropic/account-probe");
+const { seedAccountCredentials } = await import("../testing/seed-credentials");
 
 const caller = appRouter.createCaller({ req: new Request("http://cc-lb.test") });
 
-afterAll(() => {
+// bun runs test files in one process sharing the db singleton; start from a
+// clean slate and re-assert our accounts dir so absolute counts hold regardless
+// of what other test files left behind.
+beforeAll(() => {
+  process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
+  for (const existing of listAccounts()) deleteAccount(existing.id);
+});
+
+afterAll(async () => {
   resetClaudeCodeLoginSessionsForTests();
+  await resetProbeStateForTests();
   delete process.env.CLAUDE_CODE_LOGIN_COMMAND;
   delete process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.CLAUDE_ACCOUNTS_DIR;
   for (const suffix of ["", "-wal", "-shm"]) {
     rmSync(`${dbPath}${suffix}`, { force: true });
   }
   rmSync(claudeConfigDir, { force: true, recursive: true });
+  rmSync(accountsDir, { force: true, recursive: true });
 });
 
 describe("appRouter accounts", () => {
-  test("returns public account status and token health", async () => {
+  test("returns public account status from credentials + rate-limit state", async () => {
     const now = Date.now();
-    createAccount({
-      name: "Healthy",
-      access_token: "access-a",
-      refresh_token: "refresh-a",
-      expires_at: now + 3_600_000,
-      priority: 0,
-    });
-    const limited = createAccount({
-      name: "Rate limited",
-      access_token: "access-b",
-      refresh_token: "refresh-b",
-      expires_at: now + 3_600_000,
-      priority: 1,
-    });
+    const healthy = createAccount({ name: "Healthy", priority: 0 });
+    seedAccountCredentials(healthy.id, { accessToken: "access-a", refreshToken: "refresh-a", expiresAt: now + 3_600_000 });
+    const limited = createAccount({ name: "Rate limited", priority: 1 });
+    seedAccountCredentials(limited.id, { accessToken: "access-b", refreshToken: "refresh-b", expiresAt: now + 3_600_000 });
     updateAccount(limited.id, {
       rate_limited_until: now + 60_000,
       rate_limit_status: "rate_limited",
       rate_limit_remaining: 0,
       rate_limit_reset: now + 60_000,
     });
-    createAccount({
-      name: "Needs reauth",
-      access_token: null,
-      refresh_token: null,
-      expires_at: null,
-      priority: 2,
-    });
+    // No credentials file → needs_reauth.
+    createAccount({ name: "Needs reauth", priority: 2 });
 
     const accounts = await caller.accounts.list();
     expect(accounts.map((account) => account.name)).toEqual(["Healthy", "Rate limited", "Needs reauth"]);
@@ -64,7 +65,7 @@ describe("appRouter accounts", () => {
     expect(accounts.find((account) => account.name === "Rate limited")?.status).toBe("rate_limited");
     const reauth = accounts.find((account) => account.name === "Needs reauth");
     expect(reauth?.status).toBe("needs_reauth");
-    expect(reauth?.tokenHealth.requiresReauth).toBe(true);
+    expect(reauth?.needsReauth).toBe(true);
   });
 
   test("stats count account states from public status mapping", async () => {
@@ -76,12 +77,8 @@ describe("appRouter accounts", () => {
   });
 
   test("update toggles pause state and pause reason", async () => {
-    const account = createAccount({
-      name: "Pause me",
-      access_token: "access-c",
-      refresh_token: "refresh-c",
-      expires_at: Date.now() + 3_600_000,
-    });
+    const account = createAccount({ name: "Pause me" });
+    seedAccountCredentials(account.id, { accessToken: "access-c", refreshToken: "refresh-c" });
 
     const paused = await caller.accounts.update({
       id: account.id,
@@ -114,7 +111,7 @@ describe("appRouter accounts", () => {
       deviceIdOverride: "device-a",
     });
     expect(account.authType).toBe("oauth_refresh");
-    expect(account.tokenHealth.requiresReauth).toBe(false);
+    expect(account.needsReauth).toBe(false);
     expect(account.deviceIdOverride).toBe("device-a");
     expect(account.status).toBe("active");
 
@@ -125,12 +122,7 @@ describe("appRouter accounts", () => {
 
 describe("appRouter requests", () => {
   test("lists request logs with filters and options", async () => {
-    const account = createAccount({
-      name: "Request owner",
-      access_token: "access-requests",
-      refresh_token: "refresh-requests",
-      expires_at: Date.now() + 3_600_000,
-    });
+    const account = createAccount({ name: "Request owner" });
     const now = Date.now();
     const id = logRequest({
       accountId: account.id,

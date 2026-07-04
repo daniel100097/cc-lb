@@ -2,43 +2,41 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { findClaudeCodeOAuthToken } from "./credentials";
+import {
+  adoptPaneSession,
+  claudeScreenReady,
+  cleanClaudeCodeOutput,
+  getClaudeCodeTmuxSocketPath,
+  killPaneSession,
+  outputHint,
+  type PaneSession,
+  refreshPaneOutput,
+  rejectWaiters,
+  runTmux,
+  sendTmuxLiteral,
+  shellQuote,
+  startPaneSession,
+  waitForOutput,
+} from "./tmux-driver";
 
 const LOGIN_URL_TIMEOUT_MS = 30_000;
 const COMPLETE_TIMEOUT_MS = 5 * 60_000;
 const SESSION_TTL_MS = 10 * 60 * 1000;
-const MAX_OUTPUT_CHARS = 80_000;
-const DEFAULT_TMUX_SOCKET_PATH = "/tmp/cc-lb-claude-code.tmux";
 const LOGIN_CONFIG_ROOT = "/tmp/cc-lb-claude-logins";
-const PROMPT_RETRY_MS = 1_500;
-const ESC = 27;
-const BEL = 7;
+
+// Login answers every startup prompt; "paste_code" is handled by the driver as never-auto-answered.
+const LOGIN_AUTO_ANSWER = { theme: true, loginMethod: true, security: true, trust: true } as const;
 
 type LoginStatus = "starting" | "waiting_for_code" | "waiting_for_credentials" | "complete" | "failed";
 type ClaudeCodeCredentials = Record<string, unknown>;
 
-interface Waiter {
-  check: (output: string) => boolean;
-  reject: (error: Error) => void;
-  timeout: Timer;
-}
-
 interface LoginSession {
   id: string;
-  tmuxName: string;
+  pane: PaneSession;
   configDir: string;
   createdAt: number;
-  output: string;
   status: LoginStatus;
   authUrl: string | null;
-  exited: boolean;
-  exitCode: number | null;
-  waiters: Waiter[];
-  pollTimer: Timer | null;
-  refreshing: boolean;
-  themeEnterSentAt: number;
-  loginEnterSentAt: number;
-  securityEnterSentAt: number;
-  trustEnterSentAt: number;
 }
 
 const sessions = new Map<string, LoginSession>();
@@ -53,6 +51,7 @@ export interface ClaudeCodeLoginBeginResult {
 
 export interface ClaudeCodeLoginCompleteResult {
   credentials: ClaudeCodeCredentials;
+  configDir: string;
 }
 
 export interface ClaudeCodeLoginStatusResult {
@@ -71,34 +70,28 @@ export async function beginClaudeCodeLogin(now = Date.now()): Promise<ClaudeCode
   cleanupExpiredSessions(now);
 
   const id = randomUUID();
-  const tmuxName = tmuxSessionName(id);
   const configDir = claudeLoginConfigDir(id);
   mkdirSync(configDir, { recursive: true });
-  await startTmuxSession(tmuxName, buildClaudeCodeLoginEnv(process.env, configDir));
+  const pane = await startPaneSession({
+    tmuxName: tmuxSessionName(id),
+    configDir,
+    autoAnswer: LOGIN_AUTO_ANSWER,
+    onOutput: onLoginPaneOutput,
+  });
   const session: LoginSession = {
     id,
-    tmuxName,
+    pane,
     configDir,
     createdAt: now,
-    output: "",
     status: "starting",
     authUrl: null,
-    exited: false,
-    exitCode: null,
-    waiters: [],
-    pollTimer: null,
-    refreshing: false,
-    themeEnterSentAt: 0,
-    loginEnterSentAt: 0,
-    securityEnterSentAt: 0,
-    trustEnterSentAt: 0,
   };
+  loginSessionByPane.set(pane, session);
   sessions.set(id, session);
-  startPolling(session);
-  await refreshTmuxOutput(session);
+  await refreshPaneOutput(pane);
 
   try {
-    const authUrl = await waitForOutput(session, extractClaudeCodeAuthUrl, LOGIN_URL_TIMEOUT_MS, "Claude Code login URL");
+    const authUrl = await waitForOutput(pane, extractClaudeCodeAuthUrl, LOGIN_URL_TIMEOUT_MS, "Claude Code login URL");
     session.authUrl = authUrl;
     session.status = "waiting_for_code";
     return { sessionId: id, authUrl, ...tmuxSessionInfo(session) };
@@ -117,17 +110,17 @@ export async function completeClaudeCodeLogin(sessionId: string, code: string): 
   const trimmed = code.trim();
   if (!trimmed) throw new Error("Claude Code login code is required");
 
-  const existingCredentials = extractCompletedClaudeLogin(session, session.output);
+  const existingCredentials = extractCompletedClaudeLogin(session, session.pane.output);
   if (existingCredentials) {
     return completeSessionWithCredentials(session, existingCredentials);
   }
 
   try {
-    await sendTmuxLiteral(session.tmuxName, trimmed);
+    await sendTmuxLiteral(session.pane.tmuxName, trimmed);
     session.status = "waiting_for_credentials";
 
     const credentials = await waitForOutput(
-      session,
+      session.pane,
       (output) => extractCompletedClaudeLogin(session, output),
       COMPLETE_TIMEOUT_MS,
       "Claude Code login completion",
@@ -141,14 +134,14 @@ export async function completeClaudeCodeLogin(sessionId: string, code: string): 
 export async function getClaudeCodeLoginStatus(sessionId: string): Promise<ClaudeCodeLoginStatusResult> {
   const session = await getOrRecoverSession(sessionId);
   if (!session) throw new Error("Claude Code login session expired or not found");
-  await refreshTmuxOutput(session);
+  await refreshPaneOutput(session.pane);
   return {
     status: session.status,
     authUrl: session.authUrl,
-    output: redactClaudeCodeOutput(cleanClaudeCodeOutput(session.output)).trim().slice(-12_000),
-    exited: session.exited,
-    exitCode: session.exitCode,
-    tokenReady: extractCompletedClaudeLogin(session, session.output) !== null,
+    output: redactClaudeCodeOutput(cleanClaudeCodeOutput(session.pane.output)).trim().slice(-12_000),
+    exited: session.pane.exited,
+    exitCode: session.pane.exitCode,
+    tokenReady: extractCompletedClaudeLogin(session, session.pane.output) !== null,
     ...tmuxSessionInfo(session),
   };
 }
@@ -156,8 +149,38 @@ export async function getClaudeCodeLoginStatus(sessionId: string): Promise<Claud
 function completeSessionWithCredentials(session: LoginSession, credentials: ClaudeCodeCredentials): ClaudeCodeLoginCompleteResult {
   session.status = "complete";
   sessions.delete(session.id);
-  cleanupProcess(session);
-  return { credentials };
+  loginSessionByPane.delete(session.pane);
+  // Kill the pane but keep the config dir on disk — the router adopts it into
+  // the account's persistent config dir right after createAccount.
+  void killPaneSession(session.pane);
+  return { credentials, configDir: session.configDir };
+}
+
+// Pane → login session backref for the onOutput hook (driver knows nothing about logins).
+const loginSessionByPane = new WeakMap<PaneSession, LoginSession>();
+
+function onLoginPaneOutput(pane: PaneSession): void {
+  const session = loginSessionByPane.get(pane);
+  if (!session) return;
+  const authUrl = extractClaudeCodeAuthUrl(pane.output);
+  if (authUrl) session.authUrl = authUrl;
+  if (session.status === "starting" && authUrl) {
+    session.status = "waiting_for_code";
+  }
+  if (pane.exited) {
+    handleLoginPaneExit(session);
+  }
+}
+
+function handleLoginPaneExit(session: LoginSession): void {
+  if (session.status === "complete" || extractCompletedClaudeLogin(session, session.pane.output)) return;
+  session.status = "failed";
+  rejectWaiters(
+    session.pane,
+    new Error(
+      `Claude Code login exited before completion (${session.pane.exitCode ?? "unknown"}).${outputHint(session.pane.output)}`,
+    ),
+  );
 }
 
 export function extractClaudeCodeAuthUrl(output: string): string | null {
@@ -183,13 +206,8 @@ function extractCompletedClaudeLogin(session: LoginSession, output: string): Cla
   const credentials = readClaudeCodeCredentials(session);
   if (!credentials) return null;
 
-  const cleaned = cleanClaudeCodeOutput(output);
-  if (cleaned.includes("Welcome back") || cleaned.includes("Tips for getting started")) return credentials;
+  if (claudeScreenReady(cleanClaudeCodeOutput(output))) return credentials;
   return null;
-}
-
-export function cleanClaudeCodeOutput(output: string): string {
-  return stripControlChars(stripAnsiSequences(output)).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 export function redactClaudeCodeOutput(output: string): string {
@@ -201,13 +219,9 @@ export function redactClaudeCodeOutput(output: string): string {
 
 export function resetClaudeCodeLoginSessionsForTests(): void {
   for (const session of sessions.values()) {
-    cleanupProcess(session);
+    void killPaneSession(session.pane);
   }
   sessions.clear();
-}
-
-export function getClaudeCodeTmuxSocketPath(baseEnv: NodeJS.ProcessEnv = process.env): string {
-  return baseEnv.CLAUDE_CODE_TMUX_SOCKET ?? DEFAULT_TMUX_SOCKET_PATH;
 }
 
 export function getClaudeCodeCredentialsPath(baseEnv: NodeJS.ProcessEnv = process.env): string {
@@ -230,30 +244,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function buildClaudeCodeLoginEnv(baseEnv: NodeJS.ProcessEnv, configDir = baseEnv.CLAUDE_CONFIG_DIR ?? "./data/claude"): Record<string, string> {
-  const localBin = `${process.cwd()}/node_modules/.bin`;
-  return {
-    ...stringEnv(baseEnv),
-    PATH: `${localBin}:${baseEnv.PATH ?? ""}`,
-    TERM: baseEnv.TERM ?? "xterm-256color",
-    CLAUDE_CODE_NO_FLICKER: "0",
-    CLAUDE_CODE_LOGIN_COMMAND: baseEnv.CLAUDE_CODE_LOGIN_COMMAND ?? shellQuote(`${localBin}/claude`),
-    CLAUDE_CONFIG_DIR: configDir,
-  };
-}
-
-function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) result[key] = value;
-  }
-  return result;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
-}
-
 async function getOrRecoverSession(sessionId: string): Promise<LoginSession | null> {
   const current = sessions.get(sessionId);
   if (current) return current;
@@ -268,252 +258,39 @@ async function getOrRecoverSession(sessionId: string): Promise<LoginSession | nu
     return null;
   }
 
-  const session: LoginSession = {
-    id: sessionId,
+  const pane = adoptPaneSession({
     tmuxName,
     configDir: claudeLoginConfigDir(sessionId),
+    autoAnswer: LOGIN_AUTO_ANSWER,
+    onOutput: onLoginPaneOutput,
+  });
+  const session: LoginSession = {
+    id: sessionId,
+    pane,
+    configDir: claudeLoginConfigDir(sessionId),
     createdAt: Date.now(),
-    output: "",
     status: "starting",
     authUrl: null,
-    exited: false,
-    exitCode: null,
-    waiters: [],
-    pollTimer: null,
-    refreshing: false,
-    themeEnterSentAt: 0,
-    loginEnterSentAt: 0,
-    securityEnterSentAt: 0,
-    trustEnterSentAt: 0,
   };
+  loginSessionByPane.set(pane, session);
   sessions.set(sessionId, session);
-  startPolling(session);
-  await refreshTmuxOutput(session);
+  await refreshPaneOutput(pane);
   return session;
-}
-
-function startPolling(session: LoginSession): void {
-  session.pollTimer = setInterval(() => {
-    void refreshTmuxOutput(session);
-  }, 500);
-}
-
-async function refreshTmuxOutput(session: LoginSession): Promise<void> {
-  if (session.refreshing) return;
-  session.refreshing = true;
-  try {
-    const output = await runTmux(["capture-pane", "-pt", session.tmuxName, "-S", "-10000"]);
-    setOutput(session, output);
-  } catch {
-    if (session.status !== "complete") {
-      session.exited = true;
-      session.status = "failed";
-      rejectWaiters(session, new Error(`Claude Code tmux session is unavailable.${outputHint(session.output)}`));
-    }
-  } finally {
-    session.refreshing = false;
-  }
-}
-
-function setOutput(session: LoginSession, output: string): void {
-  session.output = output.slice(-MAX_OUTPUT_CHARS);
-  updateSessionFromOutput(session);
-  driveClaudeLoginPrompts(session);
-  for (const waiter of session.waiters.slice()) {
-    if (!waiter.check(session.output)) continue;
-    clearTimeout(waiter.timeout);
-    session.waiters = session.waiters.filter((entry) => entry !== waiter);
-  }
-  updateExitMarker(session);
-}
-
-function updateSessionFromOutput(session: LoginSession): void {
-  const authUrl = extractClaudeCodeAuthUrl(session.output);
-  if (authUrl) session.authUrl = authUrl;
-  if (session.status === "starting" && authUrl) {
-    session.status = "waiting_for_code";
-  }
-}
-
-function updateExitMarker(session: LoginSession): void {
-  const exit = /\[cc-lb\] Claude Code process exited with status (\d+)/.exec(cleanClaudeCodeOutput(session.output));
-  if (!exit) return;
-  session.exited = true;
-  session.exitCode = Number(exit[1]);
-  if (session.status === "complete" || extractCompletedClaudeLogin(session, session.output)) return;
-  session.status = "failed";
-  rejectWaiters(
-    session,
-    new Error(`Claude Code login exited before completion (${session.exitCode}).${outputHint(session.output)}`),
-  );
-}
-
-function driveClaudeLoginPrompts(session: LoginSession, now = Date.now()): void {
-  const screen = currentScreenText(session.output);
-  if (screen.includes("Welcome back") || screen.includes("Tips for getting started")) return;
-
-  const latestPrompt = latestClaudePrompt(screen);
-  if (latestPrompt === "paste_code") return;
-  if (latestPrompt === "trust") {
-    session.trustEnterSentAt = sendPromptEnter(session, session.trustEnterSentAt, now);
-    return;
-  }
-  if (latestPrompt === "security") {
-    session.securityEnterSentAt = sendPromptEnter(session, session.securityEnterSentAt, now);
-    return;
-  }
-  if (latestPrompt === "login_method") {
-    session.loginEnterSentAt = sendPromptEnter(session, session.loginEnterSentAt, now);
-    return;
-  }
-  if (latestPrompt === "theme") {
-    session.themeEnterSentAt = sendPromptEnter(session, session.themeEnterSentAt, now);
-  }
-}
-
-function latestClaudePrompt(screen: string): "theme" | "login_method" | "paste_code" | "security" | "trust" | null {
-  const prompts: Array<{ name: NonNullable<ReturnType<typeof latestClaudePrompt>>; index: number }> = [
-    { name: "theme", index: screen.lastIndexOf("Choose the text style that looks best with your terminal") },
-    { name: "login_method", index: screen.lastIndexOf("Select login method:") },
-    { name: "paste_code", index: screen.lastIndexOf("Paste code here if prompted") },
-    { name: "security", index: screen.lastIndexOf("Press Enter to continue") },
-    {
-      name: "trust",
-      index:
-        screen.includes("Quick safety check") && screen.includes("Yes, I trust this folder")
-          ? screen.lastIndexOf("Quick safety check")
-          : -1,
-    },
-  ];
-  const latest = prompts
-    .filter((prompt) => prompt.index >= 0)
-    .sort((left, right) => right.index - left.index)
-    .at(0);
-  return latest?.name ?? null;
-}
-
-function currentScreenText(output: string): string {
-  return cleanClaudeCodeOutput(output).split("\n").slice(-80).join("\n");
-}
-
-function sendPromptEnter(session: LoginSession, lastSentAt: number, now: number): number {
-  if (now - lastSentAt < PROMPT_RETRY_MS) return lastSentAt;
-  void sendTmuxKey(session.tmuxName, "C-m");
-  return now;
-}
-
-function waitForOutput<T>(
-  session: LoginSession,
-  pick: (output: string) => T | null,
-  timeoutMs: number,
-  label: string,
-): Promise<T> {
-  const existing = pick(session.output);
-  if (existing !== null) return Promise.resolve(existing);
-  if (session.exited) {
-    return Promise.reject(new Error(`Claude Code login exited before emitting ${label}.${outputHint(session.output)}`));
-  }
-
-  return new Promise((resolve, reject) => {
-    const waiter: Waiter = {
-      check: (output) => {
-        const value = pick(output);
-        if (value === null) return false;
-        resolve(value);
-        return true;
-      },
-      reject,
-      timeout: setTimeout(() => {
-        session.waiters = session.waiters.filter((entry) => entry !== waiter);
-        reject(new Error(`Timed out waiting for ${label}.${outputHint(session.output)}`));
-      }, timeoutMs),
-    };
-    session.waiters.push(waiter);
-  });
-}
-
-function rejectWaiters(session: LoginSession, error: Error): void {
-  for (const waiter of session.waiters) {
-    clearTimeout(waiter.timeout);
-    waiter.reject(error);
-  }
-  session.waiters = [];
 }
 
 function cleanupExpiredSessions(now: number): void {
   for (const session of sessions.values()) {
     if (now - session.createdAt <= SESSION_TTL_MS) continue;
     session.status = "failed";
-    rejectWaiters(session, new Error("Claude Code login session expired"));
-    cleanupProcess(session);
+    rejectWaiters(session.pane, new Error("Claude Code login session expired"));
+    void killPaneSession(session.pane);
+    loginSessionByPane.delete(session.pane);
     sessions.delete(session.id);
   }
 }
 
-function cleanupProcess(session: LoginSession): void {
-  if (session.pollTimer) clearInterval(session.pollTimer);
-  session.pollTimer = null;
-  void runTmux(["kill-session", "-t", session.tmuxName]).catch(() => {});
-}
-
-function outputHint(output: string): string {
-  const cleaned = redactClaudeCodeOutput(cleanClaudeCodeOutput(output)).trim().slice(-500);
-  return cleaned ? ` Last output: ${cleaned}` : "";
-}
-
 function withAttachHint(session: LoginSession, error: unknown): string {
   return `${errorMessage(error)} Attach with: ${tmuxSessionInfo(session).tmuxAttachCommand}`;
-}
-
-function stripAnsiSequences(input: string): string {
-  let output = "";
-  for (let index = 0; index < input.length; index += 1) {
-    const code = input.charCodeAt(index);
-    if (code !== ESC) {
-      output += input[index];
-      continue;
-    }
-
-    const next = input[index + 1];
-    if (next === "]") {
-      index = skipOscSequence(input, index + 2);
-      continue;
-    }
-    if (next === "[") {
-      index = skipAnsiSequence(input, index + 2);
-      continue;
-    }
-    index += 1;
-  }
-  return output;
-}
-
-function skipOscSequence(input: string, index: number): number {
-  for (let cursor = index; cursor < input.length; cursor += 1) {
-    if (input.charCodeAt(cursor) === BEL) return cursor;
-    if (input.charCodeAt(cursor) === ESC && input[cursor + 1] === "\\") return cursor + 1;
-  }
-  return input.length - 1;
-}
-
-function skipAnsiSequence(input: string, index: number): number {
-  for (let cursor = index; cursor < input.length; cursor += 1) {
-    const code = input.charCodeAt(cursor);
-    if (code >= 0x40 && code <= 0x7e) return cursor;
-  }
-  return input.length - 1;
-}
-
-function stripControlChars(input: string): string {
-  let output = "";
-  for (const char of input) {
-    const code = char.charCodeAt(0);
-    if ((code >= 0 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127) {
-      continue;
-    }
-    output += char;
-  }
-  return output;
 }
 
 function tmuxSessionName(id: string): string {
@@ -530,75 +307,16 @@ function tmuxSessionInfo(session: LoginSession): Pick<
 > {
   const tmuxSocket = getClaudeCodeTmuxSocketPath();
   return {
-    tmuxSession: session.tmuxName,
+    tmuxSession: session.pane.tmuxName,
     tmuxSocket,
-    tmuxAttachCommand: `tmux -S ${shellQuote(tmuxSocket)} attach -t ${shellQuote(session.tmuxName)}`,
+    tmuxAttachCommand: `tmux -S ${shellQuote(tmuxSocket)} attach -t ${shellQuote(session.pane.tmuxName)}`,
   };
-}
-
-async function startTmuxSession(sessionName: string, env: Record<string, string>): Promise<void> {
-  const command = buildTmuxLoginCommand(env);
-  try {
-    await runTmux(["new-session", "-d", "-s", sessionName, "-x", "500", "-y", "40", "-c", process.cwd(), command]);
-  } catch (error) {
-    throw new Error(`Failed to start tmux for Claude Code login. Ensure tmux is installed. ${errorMessage(error)}`);
-  }
-}
-
-export function buildTmuxLoginCommand(env: Record<string, string>): string {
-  const exports = [
-    ["PATH", env.PATH],
-    ["TERM", env.TERM],
-    ["CLAUDE_CODE_NO_FLICKER", env.CLAUDE_CODE_NO_FLICKER],
-    ["CLAUDE_CONFIG_DIR", env.CLAUDE_CONFIG_DIR],
-  ]
-    .filter((entry): entry is [string, string] => Boolean(entry[1]))
-    .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
-    .join("; ");
-  return [
-    "stty cols 500 rows 40 || true",
-    exports,
-    `(${env.CLAUDE_CODE_LOGIN_COMMAND})`,
-    'status=$?',
-    'printf "\\n[cc-lb] Claude Code process exited with status %s\\n" "$status"',
-    "sleep 600",
-  ]
-    .filter(Boolean)
-    .join("; ");
-}
-
-async function sendTmuxLiteral(sessionName: string, value: string): Promise<void> {
-  await runTmux(["send-keys", "-t", sessionName, "-l", value]);
-  await sendTmuxKey(sessionName, "Enter");
-}
-
-async function sendTmuxKey(sessionName: string, key: string): Promise<void> {
-  await runTmux(["send-keys", "-t", sessionName, key]);
-}
-
-async function runTmux(args: string[]): Promise<string> {
-  let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
-  try {
-    proc = Bun.spawn(["tmux", "-S", getClaudeCodeTmuxSocketPath(), ...args], {
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      env: buildClaudeCodeLoginEnv(process.env),
-    });
-  } catch (error) {
-    throw new Error(`tmux failed to start: ${errorMessage(error)}`);
-  }
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(stderr.trim() || stdout.trim() || `tmux exited with ${exitCode}`);
-  }
-  return stdout;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+// Legacy names — claude-code-cli.test.ts and older callers import these from here.
+export { cleanClaudeCodeOutput, getClaudeCodeTmuxSocketPath } from "./tmux-driver";
+export { buildClaudeCliEnv as buildClaudeCodeLoginEnv, buildTmuxClaudeCommand as buildTmuxLoginCommand } from "./tmux-driver";

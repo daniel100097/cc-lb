@@ -159,6 +159,13 @@ function migrate() {
   ensureColumn("request_log", "api_key_id", "TEXT");
   ensureColumn("accounts", "auth_type", "TEXT NOT NULL DEFAULT 'oauth_refresh'");
   ensureColumn("accounts", "device_id_override", "TEXT");
+  ensureColumn("accounts", "usage_windows", "TEXT");
+  ensureColumn("accounts", "usage_checked_at", "INTEGER");
+  dropColumn("accounts", "access_token");
+  dropColumn("accounts", "refresh_token");
+  dropColumn("accounts", "expires_at");
+  dropColumn("accounts", "refresh_token_issued_at");
+  dropColumn("accounts", "scopes");
   db.exec("CREATE INDEX IF NOT EXISTS idx_request_log_api_key_ts ON request_log(api_key_id, ts);");
 }
 
@@ -168,4 +175,10 @@ function ensureColumn(table: string, column: string, definition: string): void {
   const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
   if (rows.some((row) => row.name === column)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+}
+
+function dropColumn(table: string, column: string): void {
+  const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+  if (!rows.some((row) => row.name === column)) return;
+  db.exec(`ALTER TABLE ${table} DROP COLUMN ${column};`);
 }

@@ -25,7 +25,8 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "start": "bun src/index.ts",
-    "healthcheck": "bun src/healthcheck.ts"
+    "healthcheck": "bun src/healthcheck.ts",
+    "compare-proxy": "bun run scripts/compare-proxy.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",

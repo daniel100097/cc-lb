@@ -5,11 +5,6 @@ export const accounts = sqliteTable("accounts", {
   name: text("name").notNull(),
   authType: text("auth_type").notNull().default("oauth_refresh"),
   deviceIdOverride: text("device_id_override"),
-  accessToken: text("access_token"),
-  refreshToken: text("refresh_token"),
-  expiresAt: integer("expires_at"),
-  refreshTokenIssuedAt: integer("refresh_token_issued_at"),
-  scopes: text("scopes"),
   createdAt: integer("created_at").notNull(),
   lastUsed: integer("last_used"),
   priority: integer("priority").notNull().default(0),
@@ -24,6 +19,8 @@ export const accounts = sqliteTable("accounts", {
   needsReauth: integer("needs_reauth").notNull().default(0),
   paused: integer("paused").notNull().default(0),
   pauseReason: text("pause_reason"),
+  usageWindows: text("usage_windows"),
+  usageCheckedAt: integer("usage_checked_at"),
 });
 
 export const settings = sqliteTable("settings", {

@@ -1,6 +1,6 @@
+import { accountDeviceId, accountRealUuid } from "../anthropic/account-config";
 import { API_BASE } from "../anthropic/constants";
 import { prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
-import { checkRefreshTokenHealth } from "../anthropic/token-health";
 import { getValidAccessToken } from "../anthropic/token-manager";
 import { isStrategyName, selectAccount } from "../balancer/strategies";
 import { isAvailable, toState, type AccountState } from "../balancer/types";
@@ -134,8 +134,12 @@ async function attempt(
   }
 
   const target = `${API_BASE}${url.pathname}${url.search}`;
-  const headers = prepareRequestHeaders(req.headers, accessToken, account.device_id_override);
-  const outboundBody = buildAttemptBody(bodyBuf, account, context);
+  // Prefer the account's own Claude device id (machineID from its config dir) so
+  // upstream sees a device fingerprint consistent with that account; fall back to
+  // a manually configured override.
+  const deviceIdOverride = accountDeviceId(account.id) ?? account.device_id_override;
+  const headers = prepareRequestHeaders(req.headers, accessToken, deviceIdOverride);
+  const outboundBody = buildAttemptBody(bodyBuf, account, context, deviceIdOverride);
 
   let upstream: Response;
   let info;
@@ -435,10 +439,13 @@ function buildAttemptBody(
   bodyBuf: ArrayBuffer | null,
   account: Account,
   context: AttemptContext,
+  deviceIdOverride: string | null,
 ): ArrayBuffer | null {
   const patch: IdentityPatch = {
-    deviceId: account.device_id_override && context.bodySignals.hasDeviceId ? account.device_id_override : null,
-    accountUuid: context.bodySignals.hasAccountUuid ? account.id : null,
+    deviceId: deviceIdOverride && context.bodySignals.hasDeviceId ? deviceIdOverride : null,
+    // Prefer the account's real Anthropic accountUuid (from its Claude folder) so
+    // the body matches a native Claude Code call; fall back to our internal id.
+    accountUuid: context.bodySignals.hasAccountUuid ? (accountRealUuid(account.id) ?? account.id) : null,
   };
   if (!bodyBuf || (patch.deviceId === null && patch.accountUuid === null)) return bodyBuf;
   const patched = structuredClone(context.parsedBody);
@@ -610,7 +617,7 @@ function poolExhausted(accounts: Account[], now: number): Response {
   const details = accounts.map((a) => ({
     id: a.id,
     name: a.name,
-    reason: a.paused ? "paused" : a.needs_reauth === 1 || checkRefreshTokenHealth(a, now).requiresReauth ? "needs_reauth" : "rate_limited",
+    reason: a.paused ? "paused" : a.needs_reauth === 1 ? "needs_reauth" : "rate_limited",
     available_at: a.rate_limited_until ?? null,
   }));
   const soonest = accounts

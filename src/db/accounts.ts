@@ -10,11 +10,6 @@ export interface Account {
   name: string;
   auth_type: AccountAuthType;
   device_id_override: string | null;
-  access_token: string | null;
-  refresh_token: string | null;
-  expires_at: number | null;
-  refresh_token_issued_at: number | null;
-  scopes: string | null;
   created_at: number;
   last_used: number | null;
   priority: number;
@@ -29,17 +24,14 @@ export interface Account {
   needs_reauth: number;
   paused: number;
   pause_reason: string | null;
+  usage_windows: string | null;
+  usage_checked_at: number | null;
 }
 
 export interface NewAccount {
   name: string;
   auth_type?: AccountAuthType;
   device_id_override?: string | null;
-  access_token?: string | null;
-  refresh_token?: string | null;
-  expires_at?: number | null;
-  refresh_token_issued_at?: number | null;
-  scopes?: string | null;
   priority?: number;
 }
 
@@ -70,11 +62,6 @@ export function createAccount(a: NewAccount): Account {
       name: a.name,
       authType: a.auth_type ?? "oauth_refresh",
       deviceIdOverride: a.device_id_override ?? null,
-      accessToken: a.access_token ?? null,
-      refreshToken: a.refresh_token ?? null,
-      expiresAt: a.expires_at ?? null,
-      refreshTokenIssuedAt: a.refresh_token_issued_at ?? null,
-      scopes: a.scopes ?? null,
       createdAt: now,
       priority: a.priority ?? 0,
     })
@@ -94,11 +81,6 @@ export function updateAccount(id: string, patch: AccountPatch): void {
   add("name", patch.name);
   add("authType", patch.auth_type);
   add("deviceIdOverride", patch.device_id_override);
-  add("accessToken", patch.access_token);
-  add("refreshToken", patch.refresh_token);
-  add("expiresAt", patch.expires_at);
-  add("refreshTokenIssuedAt", patch.refresh_token_issued_at);
-  add("scopes", patch.scopes);
   add("createdAt", patch.created_at);
   add("lastUsed", patch.last_used);
   add("priority", patch.priority);
@@ -113,6 +95,8 @@ export function updateAccount(id: string, patch: AccountPatch): void {
   add("needsReauth", patch.needs_reauth);
   add("paused", patch.paused);
   add("pauseReason", patch.pause_reason);
+  add("usageWindows", patch.usage_windows);
+  add("usageCheckedAt", patch.usage_checked_at);
 
   if (Object.keys(values).length === 0) return;
   orm.update(accountsTable).set(values).where(eq(accountsTable.id, id)).run();
@@ -138,11 +122,6 @@ interface AccountUpdateValues {
   name?: string;
   authType?: AccountAuthType;
   deviceIdOverride?: string | null;
-  accessToken?: string | null;
-  refreshToken?: string | null;
-  expiresAt?: number | null;
-  refreshTokenIssuedAt?: number | null;
-  scopes?: string | null;
   createdAt?: number;
   lastUsed?: number | null;
   priority?: number;
@@ -157,6 +136,8 @@ interface AccountUpdateValues {
   needsReauth?: number;
   paused?: number;
   pauseReason?: string | null;
+  usageWindows?: string | null;
+  usageCheckedAt?: number | null;
 }
 
 function toAccount(row: AccountRow): Account {
@@ -165,11 +146,6 @@ function toAccount(row: AccountRow): Account {
     name: row.name,
     auth_type: isAccountAuthType(row.authType) ? row.authType : "oauth_refresh",
     device_id_override: row.deviceIdOverride,
-    access_token: row.accessToken,
-    refresh_token: row.refreshToken,
-    expires_at: row.expiresAt,
-    refresh_token_issued_at: row.refreshTokenIssuedAt,
-    scopes: row.scopes,
     created_at: row.createdAt,
     last_used: row.lastUsed,
     priority: row.priority,
@@ -184,6 +160,8 @@ function toAccount(row: AccountRow): Account {
     needs_reauth: row.needsReauth,
     paused: row.paused,
     pause_reason: row.pauseReason,
+    usage_windows: row.usageWindows,
+    usage_checked_at: row.usageCheckedAt,
   };
 }
 

@@ -10,4 +10,28 @@ services:
       PORT: "8484"
       DB_PATH: /app/data/cc-lb.db
       # DASHBOARD_PASSWORD: changeme
+      # To capture what cc-lb forwards upstream, start the compare-proxy sidecar
+      # (`docker compose --profile debug up`) and uncomment:
+      # ANTHROPIC_API_BASE: http://compare-proxy:8788
+    restart: unless-stopped
+
+  # Transparent logging proxy for diffing direct Claude calls vs. cc-lb's.
+  # Opt-in: `docker compose --profile debug up compare-proxy`.
+  # Dumps redacted request files to ./data/compare/ on the host.
+  #   - Direct capture:  point Claude Code at http://localhost:8788
+  #   - cc-lb upstream:  set ANTHROPIC_API_BASE=http://compare-proxy:8788 on cc-lb (above)
+  compare-proxy:
+    image: ghcr.io/daniel100097/cc-lb:latest
+    build: .
+    command: ["bun", "run", "scripts/compare-proxy.ts"]
+    profiles: ["debug"]
+    ports:
+      - "8788:8788"
+    volumes:
+      - ./data:/app/data
+    environment:
+      PROXY_PORT: "8788"
+      PROXY_TARGET: https://api.anthropic.com
+      PROXY_OUT: /app/data/compare
+      PROXY_LABEL: direct
     restart: unless-stopped

@@ -1,5 +1,4 @@
 import type { Account } from "../db/accounts";
-import { checkRefreshTokenHealth } from "../anthropic/token-health";
 
 export interface AccountState {
   id: string;
@@ -16,13 +15,12 @@ export interface AccountState {
   consecutiveRateLimits: number;
 }
 
-export function toState(a: Account, now = Date.now()): AccountState {
-  const tokenHealth = checkRefreshTokenHealth(a, now);
+export function toState(a: Account, _now = Date.now()): AccountState {
   return {
     id: a.id,
     priority: a.priority,
     paused: a.paused === 1,
-    needsReauth: a.needs_reauth === 1 || tokenHealth.requiresReauth,
+    needsReauth: a.needs_reauth === 1,
     rateLimitedUntil: a.rate_limited_until,
     rateLimitReset: a.rate_limit_reset,
     rateLimitRemaining: a.rate_limit_remaining,
