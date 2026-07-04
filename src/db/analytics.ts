@@ -60,9 +60,13 @@ export interface ApiKeyAnalytics {
   usageByAccount7d: AccountUsageSummary[];
 }
 
-const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Nominal per-account credit budgets used to turn a utilization fraction into
+// a credit count. Must match the donut totals in the frontend dashboard.
+const FIVE_HOUR_CREDITS_PER_ACCOUNT = 3_000;
+const SEVEN_DAY_CREDITS_PER_ACCOUNT = 100_800;
 
 const TOKEN_EXPR = "COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)";
 const CACHED_TOKEN_EXPR = "COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)";
@@ -296,18 +300,65 @@ function accountUsageFromRow(
 }
 
 function toCreditApproximation(account: Account, now: number): AccountCreditApproximation {
-  const resetInMs = account.rate_limit_reset === null ? null : account.rate_limit_reset - now;
-  const remaining = account.rate_limit_remaining;
-  const usableWindow = remaining !== null && resetInMs !== null && resetInMs >= 0;
   return {
     accountId: account.id,
     accountName: account.name,
     rateLimitStatus: account.rate_limit_status,
-    rateLimitRemaining: remaining,
+    rateLimitRemaining: account.rate_limit_remaining,
     rateLimitReset: account.rate_limit_reset,
-    fiveHourRemaining: usableWindow && resetInMs <= FIVE_HOURS_MS ? remaining : null,
-    sevenDayRemaining: usableWindow && resetInMs <= SEVEN_DAYS_MS ? remaining : null,
+    fiveHourRemaining: windowCreditsRemaining(
+      account.rate_limit_5h_utilization,
+      account.rate_limit_5h_reset,
+      usageWindowUtilization(account, "session", now),
+      FIVE_HOUR_CREDITS_PER_ACCOUNT,
+      now,
+    ),
+    sevenDayRemaining: windowCreditsRemaining(
+      account.rate_limit_7d_utilization,
+      account.rate_limit_7d_reset,
+      usageWindowUtilization(account, "week_all_models", now),
+      SEVEN_DAY_CREDITS_PER_ACCOUNT,
+      now,
+    ),
   };
+}
+
+/**
+ * Convert a window's used fraction into remaining credits. Header data wins
+ * (updated on every proxied response); a reset in the past means the window
+ * rolled over while the account was idle, so fall back to the /usage probe
+ * snapshot, which itself may be null.
+ */
+function windowCreditsRemaining(
+  headerUtilization: number | null,
+  headerReset: number | null,
+  probeUtilization: number | null,
+  credits: number,
+  now: number,
+): number | null {
+  const headerFresh = headerUtilization !== null && (headerReset === null || headerReset > now);
+  const utilization = headerFresh ? headerUtilization : probeUtilization;
+  if (utilization === null) return null;
+  return Math.round(Math.min(1, Math.max(0, 1 - utilization)) * credits);
+}
+
+/** Used fraction (0..1) from the stored /usage probe snapshot, if still current. */
+function usageWindowUtilization(account: Account, kind: string, now: number): number | null {
+  if (account.usage_windows === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(account.usage_windows);
+    if (!Array.isArray(parsed)) return null;
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const window: Partial<Record<"kind" | "usedPercent" | "resetsAtMs", unknown>> = entry;
+      if (window.kind !== kind || typeof window.usedPercent !== "number") continue;
+      if (typeof window.resetsAtMs === "number" && window.resetsAtMs <= now) return null;
+      return window.usedPercent / 100;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function rangeWindow(range: AnalyticsRange, now: number): { since: number; until: number; bucketMs: number } {

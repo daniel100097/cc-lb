@@ -4,21 +4,47 @@ import type { Settings } from "../db/settings";
 
 const HARD_LIMIT_STATUSES = new Set(["rate_limited", "blocked", "queueing_hard", "payment_required"]);
 const MAX_RESET_MS = 24 * 60 * 60 * 1000;
+/** A 7d window reset can legitimately sit almost a week out. */
+const MAX_WINDOW_RESET_MS = 8 * 24 * 60 * 60 * 1000;
 /** Minimum bench once upstream reports a reset; also the default cooldown for a headerless 429. */
 export const MIN_COOLDOWN_FLOOR_MS = 60_000;
+
+export interface RateLimitWindow {
+  utilization: number | null; // fraction 0..1
+  reset: number | null; // ms epoch, or null if unknown
+}
 
 export interface RateLimitInfo {
   isRateLimited: boolean;
   status: string | null;
   resetTime: number | null; // ms epoch, or null if unknown
   remaining: number | null;
+  fiveHour: RateLimitWindow;
+  sevenDay: RateLimitWindow;
   /** 429 scoped to a model/beta (overage-disabled-reason: out_of_credits) — fail over without benching. */
   outOfCredits: boolean;
 }
 
-function clampResetTime(ms: number, now: number): number | null {
+function clampResetTime(ms: number, now: number, maxMs = MAX_RESET_MS): number | null {
   if (!Number.isFinite(ms) || ms <= now) return null;
-  return Math.min(ms, now + MAX_RESET_MS);
+  return Math.min(ms, now + maxMs);
+}
+
+/**
+ * Per-window headers (anthropic-ratelimit-unified-5h-*, -7d-*) report a used
+ * fraction instead of a remaining count; the flat -remaining header is gone
+ * from current OAuth responses.
+ */
+function parseWindow(res: Response, prefix: "5h" | "7d", now: number): RateLimitWindow {
+  const utilizationHeader = res.headers.get(`anthropic-ratelimit-unified-${prefix}-utilization`);
+  const resetHeader = res.headers.get(`anthropic-ratelimit-unified-${prefix}-reset`);
+  const utilizationRaw = utilizationHeader !== null ? Number(utilizationHeader) : NaN;
+  const utilization = Number.isFinite(utilizationRaw)
+    ? Math.min(1, Math.max(0, utilizationRaw))
+    : null;
+  const reset =
+    resetHeader !== null ? clampResetTime(Number(resetHeader) * 1000, now, MAX_WINDOW_RESET_MS) : null;
+  return { utilization, reset };
 }
 
 /** Parse Anthropic unified rate-limit headers + HTTP status. */
@@ -27,6 +53,8 @@ export function parseRateLimit(res: Response, now: number): RateLimitInfo {
   const resetHeader = res.headers.get("anthropic-ratelimit-unified-reset");
   const remainingHeader = res.headers.get("anthropic-ratelimit-unified-remaining");
   const remaining = remainingHeader !== null ? Number(remainingHeader) : null;
+  const fiveHour = parseWindow(res, "5h", now);
+  const sevenDay = parseWindow(res, "7d", now);
 
   const hardStatus = status !== null && HARD_LIMIT_STATUSES.has(status);
   const is429 = res.status === 429;
@@ -56,7 +84,26 @@ export function parseRateLimit(res: Response, now: number): RateLimitInfo {
     if (resetTime === null && is429) resetTime = now + MIN_COOLDOWN_FLOOR_MS;
   }
 
-  return { isRateLimited, status: status ?? null, resetTime, remaining, outOfCredits };
+  return { isRateLimited, status: status ?? null, resetTime, remaining, fiveHour, sevenDay, outOfCredits };
+}
+
+/** Only overwrite a window's slot when this response actually reported it. */
+function windowPatch(info: RateLimitInfo) {
+  const patch: {
+    rate_limit_5h_utilization?: number | null;
+    rate_limit_5h_reset?: number | null;
+    rate_limit_7d_utilization?: number | null;
+    rate_limit_7d_reset?: number | null;
+  } = {};
+  if (info.fiveHour.utilization !== null) {
+    patch.rate_limit_5h_utilization = info.fiveHour.utilization;
+    patch.rate_limit_5h_reset = info.fiveHour.reset;
+  }
+  if (info.sevenDay.utilization !== null) {
+    patch.rate_limit_7d_utilization = info.sevenDay.utilization;
+    patch.rate_limit_7d_reset = info.sevenDay.reset;
+  }
+  return patch;
 }
 
 function computeBackoffMs(consecutive: number, settings: Settings): number {
@@ -85,6 +132,7 @@ export function applyCooldown(
     rate_limit_status: info.status,
     rate_limit_reset: info.resetTime,
     rate_limit_remaining: info.remaining,
+    ...windowPatch(info),
   });
   account.rate_limited_until = cooldownUntil;
   account.consecutive_rate_limits = n;
@@ -92,11 +140,13 @@ export function applyCooldown(
 
 /** Persist rate-limit metadata on any response carrying a status header. */
 export function recordMetadata(account: Account, info: RateLimitInfo): void {
-  if (info.status === null && info.resetTime === null && info.remaining === null) return;
+  const hasWindowData = info.fiveHour.utilization !== null || info.sevenDay.utilization !== null;
+  if (info.status === null && info.resetTime === null && info.remaining === null && !hasWindowData) return;
   updateAccount(account.id, {
     rate_limit_status: info.status,
     rate_limit_reset: info.resetTime,
     rate_limit_remaining: info.remaining,
+    ...windowPatch(info),
   });
 }
 
