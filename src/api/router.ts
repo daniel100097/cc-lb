@@ -75,6 +75,7 @@ const settingsPatchSchema = z
     sessionDurationMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
     overloadRetryMax: z.number().int().min(0).max(10).optional(),
     newSessionUsageCutoffPercent: z.number().int().min(1).max(100).optional(),
+    userAgentOverride: z.string().trim().max(300).optional(),
   })
   .strict();
 

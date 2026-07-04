@@ -13,6 +13,8 @@ export interface Settings {
   overloadRetryMax: number;
   /** Accounts at/above this % of the 5h session or weekly window get no new sticky sessions. */
   newSessionUsageCutoffPercent: number;
+  /** Sent upstream instead of the client's user-agent; empty passes the client value through. */
+  userAgentOverride: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -26,6 +28,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sessionDurationMs: 5 * 60 * 60 * 1000,
   overloadRetryMax: 2,
   newSessionUsageCutoffPercent: 95,
+  userAgentOverride: "",
 };
 
 export function getSettings(): Settings {
@@ -57,6 +60,7 @@ export function getSettings(): Settings {
       stored.newSessionUsageCutoffPercent,
       DEFAULT_SETTINGS.newSessionUsageCutoffPercent,
     ),
+    userAgentOverride: stored.userAgentOverride ?? DEFAULT_SETTINGS.userAgentOverride,
   };
 }
 
@@ -79,6 +83,7 @@ export function patchSettings(patch: Partial<Settings>): Settings {
   if (patch.newSessionUsageCutoffPercent !== undefined) {
     upsertSetting("newSessionUsageCutoffPercent", String(patch.newSessionUsageCutoffPercent));
   }
+  if (patch.userAgentOverride !== undefined) upsertSetting("userAgentOverride", patch.userAgentOverride.trim());
   return getSettings();
 }
 

@@ -344,6 +344,74 @@ describe("handleProxy", () => {
     }
   });
 
+  test("applies the user-agent override to the upstream request", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "UA override" });
+    seedAccountCredentials(account.id, {
+      accessToken: "ua-access",
+      refreshToken: "ua-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    patchSettings({ userAgentOverride: "claude-cli/2.0.14 (external, cli)" });
+
+    const { headers: outboundHeaders, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "user-agent": "claude-cli/1.0.0 (external, cli)" },
+          body: JSON.stringify({ model: "claude-ua-override", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(outboundHeaders[0]?.get("user-agent")).toBe("claude-cli/2.0.14 (external, cli)");
+    } finally {
+      patchSettings({ userAgentOverride: "" });
+      restore();
+    }
+  });
+
+  test("passes the client user-agent upstream when no override is set", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "UA passthrough" });
+    seedAccountCredentials(account.id, {
+      accessToken: "ua-pass-access",
+      refreshToken: "ua-pass-refresh",
+      expiresAt: now + 3_600_000,
+    });
+
+    const { headers: outboundHeaders, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "user-agent": "claude-cli/1.0.0 (external, cli)" },
+          body: JSON.stringify({ model: "claude-ua-passthrough", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(outboundHeaders[0]?.get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
+    } finally {
+      restore();
+    }
+  });
+
   test("does not add account device override to requests without a device id signal", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {

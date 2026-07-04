@@ -39,6 +39,23 @@ describe("Anthropic headers", () => {
     expect(overridden.get(DEVICE_ID_HEADER)).toBe("account-device");
   });
 
+  test("replaces the client user-agent when an override is set", () => {
+    const headers = prepareRequestHeaders(
+      new Headers({ "user-agent": "claude-cli/1.0.0 (external, cli)" }),
+      "token",
+      null,
+      "claude-cli/2.0.14 (external, cli)",
+    );
+    expect(headers.get("user-agent")).toBe("claude-cli/2.0.14 (external, cli)");
+  });
+
+  test("passes the client user-agent through when the override is empty or blank", () => {
+    const incoming = new Headers({ "user-agent": "claude-cli/1.0.0 (external, cli)" });
+    expect(prepareRequestHeaders(incoming, "token").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
+    expect(prepareRequestHeaders(incoming, "token", null, "").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
+    expect(prepareRequestHeaders(incoming, "token", null, "   ").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
+  });
+
   test("sanitizes decompression-sensitive response headers", () => {
     const headers = sanitizeResponseHeaders(
       new Headers({

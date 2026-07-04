@@ -2208,6 +2208,19 @@ function SettingsForm({
         onChange={(value) => updateNumber("newSessionUsageCutoffPercent", value)}
         helper="% used of the 5h or weekly window — accounts at or above receive no new sticky sessions"
       />
+      <div className="grid gap-2 rounded-lg border p-3 lg:col-span-2">
+        <Label htmlFor="user-agent-override">User-Agent override</Label>
+        <Input
+          id="user-agent-override"
+          value={form.userAgentOverride ?? ""}
+          onChange={(event) => setForm((current) => ({ ...current, userAgentOverride: event.target.value }))}
+          placeholder="claude-cli/2.0.14 (external, cli)"
+        />
+        <span className="text-muted-foreground text-xs">
+          Sent upstream instead of the client&apos;s User-Agent — set to the installed Claude Code version so Anthropic
+          sees a consistent client. Leave empty to pass the client value through.
+        </span>
+      </div>
       <div className="flex justify-end lg:col-span-2">
         <Button type="submit" disabled={updateSettings.isPending}>
           {updateSettings.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}

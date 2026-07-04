@@ -160,7 +160,7 @@ async function attempt(
   // upstream sees a device fingerprint consistent with that account; fall back to
   // a manually configured override.
   const deviceIdOverride = accountDeviceId(account.id) ?? account.device_id_override;
-  const headers = prepareRequestHeaders(req.headers, accessToken, deviceIdOverride);
+  const headers = prepareRequestHeaders(req.headers, accessToken, deviceIdOverride, settings.userAgentOverride);
   const outboundBody = buildAttemptBody(bodyBuf, account, context, deviceIdOverride);
   const rawUpstreamRequest = context.rawRequest
     ? upstreamRequestSnapshot(req.method, target, headers, outboundBody)
