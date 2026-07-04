@@ -142,6 +142,15 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status);
     `,
   },
+  {
+    id: "006_request_log_raw_http",
+    sql: `
+      ALTER TABLE request_log ADD COLUMN raw_request_headers TEXT;
+      ALTER TABLE request_log ADD COLUMN raw_request_body TEXT;
+      ALTER TABLE request_log ADD COLUMN raw_response_headers TEXT;
+      ALTER TABLE request_log ADD COLUMN raw_response_body TEXT;
+    `,
+  },
 ];
 
 function migrate() {
@@ -157,6 +166,10 @@ function migrate() {
     if (!applied.has(migration.id)) tx(migration);
   }
   ensureColumn("request_log", "api_key_id", "TEXT");
+  ensureColumn("request_log", "raw_request_headers", "TEXT");
+  ensureColumn("request_log", "raw_request_body", "TEXT");
+  ensureColumn("request_log", "raw_response_headers", "TEXT");
+  ensureColumn("request_log", "raw_response_body", "TEXT");
   ensureColumn("accounts", "auth_type", "TEXT NOT NULL DEFAULT 'oauth_refresh'");
   ensureColumn("accounts", "device_id_override", "TEXT");
   ensureColumn("accounts", "usage_windows", "TEXT");

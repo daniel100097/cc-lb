@@ -47,6 +47,8 @@ describe("request log repository", () => {
       path: "/v1/messages",
       failoverAttempt: 1,
       latencyMs: 12,
+      rawRequestHeaders: "{\"method\":\"POST\"}",
+      rawRequestBody: "{\"model\":\"claude-sonnet-4\"}",
     });
     logRequest({
       accountId: null,
@@ -67,6 +69,8 @@ describe("request log repository", () => {
       cacheCreationTokens: 2,
       costUsd: 0.001,
       upstreamRequestId: "req_123",
+      rawResponseHeaders: "{\"status\":200}",
+      rawResponseBody: "{\"ok\":true}",
     });
 
     const page = listRequests({ limit: 10, offset: 0, accountId: account.id });
@@ -75,6 +79,8 @@ describe("request log repository", () => {
     expect(page.entries[0]?.input_tokens).toBe(100);
     expect(page.entries[0]?.failover_attempt).toBe(1);
     expect(page.entries[0]?.upstream_request_id).toBe("req_123");
+    expect(page.entries[0]?.raw_request_body).toContain("claude-sonnet-4");
+    expect(page.entries[0]?.raw_response_body).toContain("ok");
 
     const searched = listRequests({ limit: 10, offset: 0, search: "db-request-log-unique" });
     expect(searched.total).toBe(1);

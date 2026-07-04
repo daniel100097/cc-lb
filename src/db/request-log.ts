@@ -22,6 +22,10 @@ export interface RequestLogInput {
   cacheReadTokens?: number | null;
   cacheCreationTokens?: number | null;
   costUsd?: number | null;
+  rawRequestHeaders?: string | null;
+  rawRequestBody?: string | null;
+  rawResponseHeaders?: string | null;
+  rawResponseBody?: string | null;
 }
 
 export interface RequestLogUsagePatch {
@@ -35,6 +39,8 @@ export interface RequestLogUsagePatch {
   cacheCreationTokens?: number | null;
   costUsd?: number | null;
   error?: string | null;
+  rawResponseHeaders?: string | null;
+  rawResponseBody?: string | null;
 }
 
 export interface RecentRequestLog {
@@ -74,6 +80,10 @@ export interface RequestLogEntry {
   cache_read_tokens: number | null;
   cache_creation_tokens: number | null;
   cost_usd: number | null;
+  raw_request_headers: string | null;
+  raw_request_body: string | null;
+  raw_response_headers: string | null;
+  raw_response_body: string | null;
 }
 
 export interface RequestLogFilter {
@@ -115,6 +125,10 @@ export function logRequest(input: RequestLogInput): number {
       cacheReadTokens: input.cacheReadTokens ?? null,
       cacheCreationTokens: input.cacheCreationTokens ?? null,
       costUsd: input.costUsd ?? null,
+      rawRequestHeaders: input.rawRequestHeaders ?? null,
+      rawRequestBody: input.rawRequestBody ?? null,
+      rawResponseHeaders: input.rawResponseHeaders ?? null,
+      rawResponseBody: input.rawResponseBody ?? null,
     })
     .returning({ id: requestLog.id })
     .get();
@@ -136,6 +150,8 @@ export function updateRequestLogUsage(id: number, patch: RequestLogUsagePatch): 
   if (patch.cacheCreationTokens !== undefined) values.cacheCreationTokens = patch.cacheCreationTokens;
   if (patch.costUsd !== undefined) values.costUsd = patch.costUsd;
   if (patch.error !== undefined) values.error = patch.error;
+  if (patch.rawResponseHeaders !== undefined) values.rawResponseHeaders = patch.rawResponseHeaders;
+  if (patch.rawResponseBody !== undefined) values.rawResponseBody = patch.rawResponseBody;
   if (Object.keys(values).length === 0) return;
 
   orm.update(requestLog).set(values).where(eq(requestLog.id, id)).run();
@@ -244,6 +260,8 @@ interface RequestLogUpdateValues {
   cacheCreationTokens?: number | null;
   costUsd?: number | null;
   error?: string | null;
+  rawResponseHeaders?: string | null;
+  rawResponseBody?: string | null;
 }
 
 function requestSelectFields() {
@@ -269,6 +287,10 @@ function requestSelectFields() {
     cacheReadTokens: requestLog.cacheReadTokens,
     cacheCreationTokens: requestLog.cacheCreationTokens,
     costUsd: requestLog.costUsd,
+    rawRequestHeaders: requestLog.rawRequestHeaders,
+    rawRequestBody: requestLog.rawRequestBody,
+    rawResponseHeaders: requestLog.rawResponseHeaders,
+    rawResponseBody: requestLog.rawResponseBody,
   };
 }
 
@@ -295,6 +317,10 @@ function toRequestLogEntry(row: RequestRow): RequestLogEntry {
     cache_read_tokens: row.cacheReadTokens,
     cache_creation_tokens: row.cacheCreationTokens,
     cost_usd: row.costUsd,
+    raw_request_headers: row.rawRequestHeaders,
+    raw_request_body: row.rawRequestBody,
+    raw_response_headers: row.rawResponseHeaders,
+    raw_response_body: row.rawResponseBody,
   };
 }
 
@@ -320,6 +346,10 @@ interface RequestRow {
   cacheReadTokens: number | null;
   cacheCreationTokens: number | null;
   costUsd: number | null;
+  rawRequestHeaders: string | null;
+  rawRequestBody: string | null;
+  rawResponseHeaders: string | null;
+  rawResponseBody: string | null;
 }
 
 function buildWhere(filter: RequestLogFilter): SQL | undefined {
