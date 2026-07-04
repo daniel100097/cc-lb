@@ -3,6 +3,8 @@ import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-or
 export const accounts = sqliteTable("accounts", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  authType: text("auth_type").notNull().default("oauth_refresh"),
+  deviceIdOverride: text("device_id_override"),
   accessToken: text("access_token"),
   refreshToken: text("refresh_token"),
   expiresAt: integer("expires_at"),

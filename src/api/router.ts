@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { beginOAuth, completeOAuth, consumeOAuthSession } from "../anthropic/oauth";
-import { parseCredentials } from "../anthropic/credentials";
+import { beginClaudeCodeLogin, completeClaudeCodeLogin } from "../anthropic/claude-code-cli";
+import { parseClaudeCodeOAuthToken, parseCredentials } from "../anthropic/credentials";
 import { checkRefreshTokenHealth } from "../anthropic/token-health";
 import { STRATEGIES } from "../balancer/strategies";
 import { isAvailable, toState } from "../balancer/types";
@@ -76,6 +77,7 @@ const accountPatchSchema = z
     id: z.string().min(1),
     name: z.string().trim().min(1).max(120).optional(),
     priority: z.number().int().min(0).max(10_000).optional(),
+    deviceIdOverride: z.string().trim().max(200).nullable().optional(),
     paused: z.boolean().optional(),
     pauseReason: z.string().trim().max(300).nullable().optional(),
     needsReauth: z.boolean().optional(),
@@ -86,22 +88,18 @@ const importCredentialsSchema = z
   .object({
     name: z.string().trim().max(120).optional(),
     priority: z.number().int().min(0).max(10_000).optional(),
+    deviceIdOverride: z.string().trim().max(200).nullable().optional(),
     credentials: z.unknown(),
   })
   .strict();
 
-const beginOAuthSchema = z
-  .object({
-    name: z.string().trim().max(120).optional(),
-    priority: z.number().int().min(0).max(10_000).optional(),
-  })
-  .strict();
-
-const completeOAuthSchema = z
+const claudeCodeLoginCompleteSchema = z
   .object({
     sessionId: z.string().min(1),
-    code: z.string().min(1),
+    code: z.string().trim().min(1).max(4_000),
     name: z.string().trim().max(120).optional(),
+    priority: z.number().int().min(0).max(10_000).optional(),
+    deviceIdOverride: z.string().trim().max(200).nullable().optional(),
   })
   .strict();
 
@@ -188,36 +186,24 @@ export const appRouter = router({
 
     import: publicProcedure.input(importCredentialsSchema).mutation(({ input }) => {
       const parsed = parseCredentials(input.credentials, input.name);
-      const account = createAccount({ ...parsed, priority: input.priority ?? parsed.priority });
+      const account = createAccount({
+        ...parsed,
+        priority: input.priority ?? parsed.priority,
+        device_id_override: normalizeOptionalString(input.deviceIdOverride),
+      });
       return toPublicAccount(account);
     }),
 
-    oauthBegin: publicProcedure.input(beginOAuthSchema.optional()).mutation(({ input }) =>
-      beginOAuth({
-        name: input?.name ?? null,
-        priority: input?.priority ?? 0,
-      }),
-    ),
+    claudeCodeLoginBegin: publicProcedure.mutation(() => beginClaudeCodeLogin()),
 
-    oauthComplete: publicProcedure.input(completeOAuthSchema).mutation(async ({ input }) => {
-      const pendingSession = getOAuthSession(input.sessionId);
-      if (!pendingSession) throw new Error("oauth session expired or not found");
-      if (pendingSession.account_id) throw new Error("oauth session is for account reauth");
-      const completion = await completeOAuth(input.sessionId, input.code);
-      const { tokens, session } = completion;
-      const account = db.transaction(() => {
-        const created = createAccount({
-          name: input.name || session.name || "Claude OAuth account",
-          access_token: tokens.accessToken,
-          refresh_token: tokens.refreshToken,
-          expires_at: tokens.expiresAt,
-          refresh_token_issued_at: Date.now(),
-          scopes: tokens.scopes,
-          priority: session.priority,
-        });
-        consumeOAuthSession(input.sessionId);
-        return created;
-      })();
+    claudeCodeLoginComplete: publicProcedure.input(claudeCodeLoginCompleteSchema).mutation(async ({ input }) => {
+      const login = await completeClaudeCodeLogin(input.sessionId, input.code);
+      const parsed = parseClaudeCodeOAuthToken(login.token, input.name);
+      const account = createAccount({
+        ...parsed,
+        priority: input.priority ?? parsed.priority,
+        device_id_override: normalizeOptionalString(input.deviceIdOverride),
+      });
       return toPublicAccount(account);
     }),
 
@@ -244,6 +230,7 @@ export const appRouter = router({
         if (session.account_id !== accountId) throw new Error("oauth session target mismatch");
         const account = db.transaction(() => {
           updateAccount(accountId, {
+            auth_type: "oauth_refresh",
             access_token: tokens.accessToken,
             refresh_token: tokens.refreshToken,
             expires_at: tokens.expiresAt,
@@ -265,6 +252,7 @@ export const appRouter = router({
       const patch: AccountPatch = {};
       if (input.name !== undefined) patch.name = input.name;
       if (input.priority !== undefined) patch.priority = input.priority;
+      if (input.deviceIdOverride !== undefined) patch.device_id_override = normalizeOptionalString(input.deviceIdOverride);
       if (input.paused !== undefined) {
         patch.paused = input.paused ? 1 : 0;
         patch.pause_reason = input.paused ? input.pauseReason ?? "Paused from dashboard" : null;
@@ -491,6 +479,8 @@ function toPublicAccount(account: Account, now = Date.now()) {
   return {
     id: account.id,
     name: account.name,
+    authType: account.auth_type,
+    deviceIdOverride: account.device_id_override,
     status,
     priority: account.priority,
     requestCount: account.request_count,
@@ -510,6 +500,11 @@ function toPublicAccount(account: Account, now = Date.now()) {
     tokenHealth,
     available,
   };
+}
+
+function normalizeOptionalString(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
 }
 
 function toPublicRequestLogEntry(entry: RequestLogEntry) {

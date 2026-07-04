@@ -8,6 +8,8 @@ function account(patch: Partial<Account>): Account {
   return {
     id: "a",
     name: "Account",
+    auth_type: "oauth_refresh",
+    device_id_override: null,
     access_token: "access",
     refresh_token: "refresh",
     expires_at: now + 60_000,
@@ -59,6 +61,32 @@ describe("checkRefreshTokenHealth", () => {
   test("missing refresh token requires reauth", () => {
     const health = checkRefreshTokenHealth(account({ refresh_token: null }), now);
     expect(health.status).toBe("no_refresh_token");
+    expect(health.requiresReauth).toBe(true);
+  });
+
+  test("Claude Code OAuth token accounts do not require a refresh token", () => {
+    const health = checkRefreshTokenHealth(
+      account({
+        auth_type: "claude_code_oauth_token",
+        refresh_token: null,
+        expires_at: now + 300 * 24 * 60 * 60 * 1000,
+      }),
+      now,
+    );
+    expect(health.status).toBe("healthy");
+    expect(health.requiresReauth).toBe(false);
+  });
+
+  test("expired Claude Code OAuth token accounts require reauth", () => {
+    const health = checkRefreshTokenHealth(
+      account({
+        auth_type: "claude_code_oauth_token",
+        refresh_token: null,
+        expires_at: now - 1,
+      }),
+      now,
+    );
+    expect(health.status).toBe("expired");
     expect(health.requiresReauth).toBe(true);
   });
 });

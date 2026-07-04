@@ -7,11 +7,11 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-    await expect(page.getByRole("row").filter({ hasText: "Primary healthy" })).toBeVisible();
-    await expect(page.getByRole("row").filter({ hasText: "Rate limited" })).toBeVisible();
-    await expect(page.getByRole("row").filter({ hasText: "Needs reauth" })).toBeVisible();
-    await expect(page.getByText("Available", { exact: true })).toBeVisible();
-    await expect(page.getByText("Requests today", { exact: true })).toBeVisible();
+    await expect(page.getByText("Primary healthy", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Rate limited", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Needs reauth", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Requests (7d)", { exact: true })).toBeVisible();
+    await expect(page.getByText("1 / 3", { exact: true })).toBeVisible();
   });
 
   test("imports credentials and pauses the imported account", async ({ page }) => {
@@ -43,17 +43,24 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await expect(row.getByText("Paused")).toBeVisible();
   });
 
-  test("opens OAuth and reauth dialogs without losing generated links", async ({ page }) => {
+  test("adds Claude Code accounts through the CLI flow and reauths refresh-token accounts", async ({ page }) => {
     await page.goto("/accounts");
 
     await page.getByRole("button", { name: "Add Account" }).click();
-    await page.getByRole("tab", { name: "OAuth" }).click();
-    const popupPromise = page.waitForEvent("popup");
-    await page.getByRole("button", { name: "Generate login link" }).click();
-    const popup = await popupPromise;
-    await popup.close();
-    await expect(page.getByText("https://claude.ai/oauth/authorize")).toBeVisible();
-    await page.getByRole("button", { name: "Close" }).click();
+    const dialog = page.getByRole("dialog", { name: "Add Claude account" });
+    await dialog.getByLabel("Name").fill("CLI E2E");
+    await dialog.getByLabel("Device ID override").fill("device-e2e");
+    await dialog.getByRole("tab", { name: "Claude Code CLI" }).click();
+    await dialog.getByRole("button", { name: "Generate login link" }).click();
+    await expect(dialog.getByText("https://claude.com/cai/oauth/authorize?code=true&client_id=e2e&state=playwright")).toBeVisible();
+    await dialog.getByRole("textbox", { name: "Claude code" }).fill("code-from-claude");
+    await dialog.getByRole("button", { name: "Add account" }).click();
+
+    await expect(page.getByText("Claude Code account added")).toBeVisible();
+    const tokenRow = page.getByRole("row").filter({ hasText: "CLI E2E" });
+    await expect(tokenRow).toBeVisible();
+    await expect(tokenRow.getByText("device device-e2e")).toBeVisible();
+    await expect(tokenRow.getByTitle("Re-authenticate")).toHaveCount(0);
 
     await page.getByRole("row").filter({ hasText: "Needs reauth" }).getByTitle("Re-authenticate").click();
     const reauthPopupPromise = page.waitForEvent("popup");
@@ -61,7 +68,7 @@ test.describe("cc-lb dashboard with seeded data", () => {
     const reauthPopup = await reauthPopupPromise;
     await reauthPopup.close();
     await expect(page.getByText("https://claude.ai/oauth/authorize")).toBeVisible();
-    await page.getByRole("button", { name: "Close" }).click();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
   });
 
   test("filters and expands request log rows", async ({ page }) => {
@@ -115,11 +122,11 @@ test.describe("cc-lb mobile navigation", () => {
   test("routes between primary pages on a narrow viewport", async ({ page }) => {
     await page.goto("/");
 
-    await page.getByRole("link", { name: "Requests" }).click();
+    await page.getByRole("link", { name: "Requests", exact: true }).click();
     await expect(page).toHaveURL(/\/requests$/);
     await expect(page.getByRole("heading", { name: "Requests" })).toBeVisible();
 
-    await page.getByRole("link", { name: "Settings" }).click();
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
     await expect(page).toHaveURL(/\/settings$/);
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   });

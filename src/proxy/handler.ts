@@ -1,5 +1,5 @@
 import { API_BASE } from "../anthropic/constants";
-import { prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
+import { DEVICE_ID_HEADER, prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
 import { checkRefreshTokenHealth } from "../anthropic/token-health";
 import { getValidAccessToken } from "../anthropic/token-manager";
 import { isStrategyName, selectAccount } from "../balancer/strategies";
@@ -56,6 +56,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
     accounts = accounts.filter((account) => assigned.has(account.id));
   }
   const stickyKey = settings.stickySessions ? deriveStickyKey(req.headers, parsedBody) : null;
+  const allowDeviceIdOverride = req.headers.has(DEVICE_ID_HEADER) || hasDeviceIdInBody(parsedBody);
   const stickyPinnedId = stickyKey ? getSticky(stickyKey, settings.stickyTtlMs, now) : null;
   const ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
   if (ordered.length === 0) {
@@ -75,6 +76,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       model,
       apiKeyId: proxyAuth.apiKey?.id ?? null,
       failoverAttempt,
+      allowDeviceIdOverride,
     });
     if (res === null) {
       failoverAttempt += 1;
@@ -131,7 +133,7 @@ async function attempt(
   }
 
   const target = `${API_BASE}${url.pathname}${url.search}`;
-  const headers = prepareRequestHeaders(req.headers, accessToken);
+  const headers = prepareRequestHeaders(req.headers, accessToken, account.device_id_override, context.allowDeviceIdOverride);
 
   let upstream: Response;
   let info;
@@ -324,6 +326,24 @@ interface AttemptContext {
   model: string | null;
   apiKeyId: string | null;
   failoverAttempt: number;
+  allowDeviceIdOverride: boolean;
+}
+
+function hasDeviceIdInBody(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((item) => hasDeviceIdInBody(item));
+
+  for (const [key, nested] of Object.entries(value)) {
+    if (isDeviceIdKey(key) && nested !== null && nested !== undefined && String(nested).trim().length > 0) {
+      return true;
+    }
+    if (hasDeviceIdInBody(nested)) return true;
+  }
+  return false;
+}
+
+function isDeviceIdKey(key: string): boolean {
+  return key.replaceAll(/[-_]/g, "").toLowerCase() === "deviceid";
 }
 
 interface ProxyAuthResult {

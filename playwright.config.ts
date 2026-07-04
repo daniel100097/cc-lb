@@ -7,6 +7,8 @@ const explicitBaseURL = process.env.E2E_BASE_URL;
 const baseURL = explicitBaseURL ?? `http://127.0.0.1:${port}`;
 const dbPath = process.env.E2E_DB_PATH ?? `/tmp/cc-lb-e2e-${process.pid}.db`;
 const chromiumExecutable = findChromiumExecutable();
+const fakeClaudeCodeLoginCommand =
+  "printf 'https://claude.com/cai/oauth/authorize?code=true&client_id=e2e&state=playwright\\nPaste code here if prompted > '; read code; printf '\\nCLAUDE_CODE_OAUTH_TOKEN=claude-code-token-e2e-value-from-cli\\n'";
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
@@ -29,6 +31,7 @@ const command = [
   "&&",
   `DB_PATH=${shellQuote(dbPath)}`,
   `PORT=${port}`,
+  `CLAUDE_CODE_LOGIN_COMMAND=${shellQuote(fakeClaudeCodeLoginCommand)}`,
   "bun",
   "src/index.ts",
 ].join(" ");

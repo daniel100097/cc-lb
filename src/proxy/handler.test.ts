@@ -8,6 +8,7 @@ for (const suffix of ["", "-wal", "-shm"]) {
 process.env.DB_PATH = dbPath;
 
 const { createAccount, listAccounts, updateAccount } = await import("../db/accounts");
+const { DEVICE_ID_HEADER } = await import("../anthropic/headers");
 const { listRequests } = await import("../db/request-log");
 const { getSticky, setSticky } = await import("../db/sticky");
 const { handleProxy } = await import("./handler");
@@ -87,6 +88,88 @@ describe("handleProxy", () => {
       expect(logs.entries[0]?.model).toBe("claude-handler-unique");
       expect(logs.entries[0]?.input_tokens).toBe(1);
       expect(logs.entries[0]?.cost_usd).toBe(0.004);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("does not add account device override to requests without a device id signal", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    createAccount({
+      name: "Device override inactive",
+      access_token: "device-access-a",
+      refresh_token: "device-refresh-a",
+      expires_at: now + 3_600_000,
+      refresh_token_issued_at: now,
+      device_id_override: "account-device",
+    });
+
+    const outboundHeaders: Headers[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        outboundHeaders.push(new Headers(init?.headers));
+        return Response.json({ usage: { input_tokens: 1, output_tokens: 2 } });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-no-device", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(outboundHeaders[0]?.get(DEVICE_ID_HEADER)).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("uses account device override when the request body already has a device id", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    createAccount({
+      name: "Device override active",
+      access_token: "device-access-b",
+      refresh_token: "device-refresh-b",
+      expires_at: now + 3_600_000,
+      refresh_token_issued_at: now,
+      device_id_override: "account-device",
+    });
+
+    const outboundHeaders: Headers[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        outboundHeaders.push(new Headers(init?.headers));
+        return Response.json({ usage: { input_tokens: 1, output_tokens: 2 } });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-body-device", messages: [], device_id: "client-device" }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(outboundHeaders[0]?.get(DEVICE_ID_HEADER)).toBe("account-device");
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -10,10 +10,13 @@ process.env.DB_PATH = dbPath;
 const { appRouter } = await import("./router");
 const { createAccount, updateAccount } = await import("../db/accounts");
 const { logRequest, updateRequestLogUsage } = await import("../db/request-log");
+const { resetClaudeCodeLoginSessionsForTests } = await import("../anthropic/claude-code-cli");
 
 const caller = appRouter.createCaller({ req: new Request("http://cc-lb.test") });
 
 afterAll(() => {
+  resetClaudeCodeLoginSessionsForTests();
+  delete process.env.CLAUDE_CODE_LOGIN_COMMAND;
   for (const suffix of ["", "-wal", "-shm"]) {
     rmSync(`${dbPath}${suffix}`, { force: true });
   }
@@ -86,6 +89,27 @@ describe("appRouter accounts", () => {
     const resumed = await caller.accounts.update({ id: account.id, paused: false });
     expect(resumed.status).toBe("active");
     expect(resumed.pauseReason).toBeNull();
+  });
+
+  test("adds Claude Code accounts through the CLI login flow and updates device override", async () => {
+    process.env.CLAUDE_CODE_LOGIN_COMMAND =
+      "printf 'https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router\\nPaste code here if prompted > '; read code; printf '\\nCLAUDE_CODE_OAUTH_TOKEN=claude-code-oauth-token-value-for-router\\n'";
+
+    const login = await caller.accounts.claudeCodeLoginBegin();
+    expect(login.authUrl).toBe("https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router");
+
+    const account = await caller.accounts.claudeCodeLoginComplete({
+      sessionId: login.sessionId,
+      code: "router-code",
+      name: "Claude Code CLI",
+      deviceIdOverride: "device-a",
+    });
+    expect(account.authType).toBe("claude_code_oauth_token");
+    expect(account.deviceIdOverride).toBe("device-a");
+    expect(account.status).toBe("active");
+
+    const updated = await caller.accounts.update({ id: account.id, deviceIdOverride: "" });
+    expect(updated.deviceIdOverride).toBeNull();
   });
 });
 

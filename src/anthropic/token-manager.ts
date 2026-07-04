@@ -11,6 +11,16 @@ const lastFailure = new Map<string, number>();
 /** Return a valid access token for the account, refreshing if near/past expiry. */
 export async function getValidAccessToken(account: Account): Promise<string> {
   const now = Date.now();
+  if (account.auth_type === "claude_code_oauth_token") {
+    if (!account.access_token) throw new Error(`account ${account.id} has no Claude Code OAuth token`);
+    if (account.expires_at !== null && account.expires_at <= now) {
+      updateAccount(account.id, { needs_reauth: 1 });
+      account.needs_reauth = 1;
+      throw new Error(`Claude Code OAuth token expired for account ${account.id}`);
+    }
+    return account.access_token;
+  }
+
   if (
     account.access_token &&
     account.expires_at &&

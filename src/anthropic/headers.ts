@@ -1,10 +1,17 @@
 import { OAUTH_BETA_HEADER } from "./constants";
 
+export const DEVICE_ID_HEADER = "x-device-id";
+
 /**
  * Rewrite client request headers for forwarding to Anthropic with our OAuth token.
  * Mirrors better-ccflare's AnthropicProvider.prepareHeaders.
  */
-export function prepareRequestHeaders(incoming: Headers, accessToken: string): Headers {
+export function prepareRequestHeaders(
+  incoming: Headers,
+  accessToken: string,
+  deviceIdOverride?: string | null,
+  allowDeviceIdOverride = incoming.has(DEVICE_ID_HEADER),
+): Headers {
   const h = new Headers(incoming);
 
   // Strip client credentials — we inject our own.
@@ -12,6 +19,9 @@ export function prepareRequestHeaders(incoming: Headers, accessToken: string): H
   h.delete("x-api-key");
 
   h.set("authorization", `Bearer ${accessToken}`);
+  if (deviceIdOverride && allowDeviceIdOverride) {
+    h.set(DEVICE_ID_HEADER, deviceIdOverride);
+  }
 
   // Ensure the OAuth beta flag is present.
   const beta = h.get("anthropic-beta");

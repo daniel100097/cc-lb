@@ -15,7 +15,7 @@ ANTHROPIC_BASE_URL=http://localhost:8484
 
 ## Status
 
-Bun server, SQLite persistence, account/OAuth APIs, Anthropic proxy failover, tRPC
+Bun server, SQLite persistence, account/token APIs, Anthropic proxy failover, tRPC
 dashboard, Docker, and CI are implemented. See [`plans/`](plans/) and
 [`docs/research/`](docs/research/) for the design notes behind the implementation.
 
@@ -23,7 +23,14 @@ dashboard, Docker, and CI are implemented. See [`plans/`](plans/) and
 
 Two ways, from the dashboard:
 1. **Paste credentials JSON** — the contents of `~/.claude/.credentials.json`.
-2. **Sign in with Claude** — OAuth (PKCE); paste back the returned `code#state`.
+2. **Claude Code CLI login** — cc-lb runs `claude setup-token`, displays the login link, then sends your pasted Claude code back to the CLI and imports the resulting token.
+
+With Docker, the image includes the `claude` CLI and the dashboard drives this
+flow from the **Claude Code CLI** tab.
+
+Each account can also set an optional device ID override. cc-lb only applies it
+when the incoming request already includes `x-device-id` or a device ID field in
+the JSON body; it never adds a device ID signal to requests that lack one.
 
 ## Run (dev)
 

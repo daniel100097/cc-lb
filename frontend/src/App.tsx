@@ -1182,7 +1182,7 @@ function AccountSummaryCards({ accounts }: { accounts: Account[] }) {
       <EmptyState
         icon={<KeyRound />}
         title="No accounts yet"
-        description="Add a Claude credentials JSON or complete the OAuth flow to start balancing requests."
+        description="Add a Claude credentials JSON or sign in through the Claude Code CLI to start balancing requests."
       />
     );
   }
@@ -1547,7 +1547,7 @@ function AccountsTable({ accounts, compact = false }: { accounts: Account[]; com
       <EmptyState
         icon={<KeyRound />}
         title="No accounts yet"
-        description="Add a Claude credentials JSON or complete the OAuth flow to start balancing requests."
+        description="Add a Claude credentials JSON or sign in through the Claude Code CLI to start balancing requests."
       />
     );
   }
@@ -1732,6 +1732,13 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     toast.success("Account renamed");
   }
 
+  async function editDeviceId() {
+    const nextDeviceId = window.prompt("Device ID override", account.deviceIdOverride ?? "");
+    if (nextDeviceId === null) return;
+    await updateAccount.mutateAsync({ id: account.id, deviceIdOverride: nextDeviceId.trim() || null });
+    toast.success(nextDeviceId.trim() ? "Device ID override saved" : "Device ID override cleared");
+  }
+
   async function remove() {
     if (!window.confirm(`Delete ${account.name}?`)) return;
     await deleteAccount.mutateAsync({ id: account.id });
@@ -1744,6 +1751,7 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
           <span className={cn("font-medium", blurNames && "privacy-blur")}>{account.name}</span>
         </div>
         <div className="text-muted-foreground text-xs">{account.id.slice(0, 8)}</div>
+        {account.deviceIdOverride ? <div className="text-muted-foreground max-w-[220px] truncate text-xs">device {account.deviceIdOverride}</div> : null}
       </td>
       <td className="px-2 py-3">
         <StatusBadge status={account.status} />
@@ -1768,7 +1776,10 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
           <Button type="button" variant="ghost" size="icon" onClick={rename} title="Rename">
             <MoreHorizontal className="size-4" />
           </Button>
-          <ReauthAccountDialog account={account} />
+          <Button type="button" variant="ghost" size="icon" onClick={editDeviceId} title="Device ID override">
+            <Code2 className="size-4" />
+          </Button>
+          {account.authType === "oauth_refresh" ? <ReauthAccountDialog account={account} /> : null}
           <Button type="button" variant="ghost" size="icon" onClick={remove} title="Delete">
             <Trash2 className="size-4" />
           </Button>
@@ -1782,9 +1793,10 @@ function AddAccountDialog() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [priority, setPriority] = useState(0);
+  const [deviceIdOverride, setDeviceIdOverride] = useState("");
   const [credentialsText, setCredentialsText] = useState("");
-  const [oauthCode, setOauthCode] = useState("");
-  const [oauthSession, setOauthSession] = useState<{ authUrl: string; sessionId: string } | null>(null);
+  const [claudeCode, setClaudeCode] = useState("");
+  const [claudeCodeSession, setClaudeCodeSession] = useState<{ authUrl: string; sessionId: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const utils = trpc.useUtils();
 
@@ -1793,28 +1805,33 @@ function AddAccountDialog() {
       await afterAccountAdded(utils);
       setOpen(false);
       setCredentialsText("");
+      setClaudeCode("");
+      setClaudeCodeSession(null);
       setName("");
       setPriority(0);
+      setDeviceIdOverride("");
       toast.success("Account imported");
     },
     onError: (mutationError) => setError(mutationError.message),
   });
-  const beginOAuth = trpc.accounts.oauthBegin.useMutation({
+  const beginClaudeCodeLogin = trpc.accounts.claudeCodeLoginBegin.useMutation({
     onSuccess: (result) => {
-      setOauthSession(result);
-      window.open(result.authUrl, "_blank", "noopener,noreferrer");
+      setClaudeCodeSession(result);
+      toast.success("Claude Code login link generated");
     },
     onError: (mutationError) => setError(mutationError.message),
   });
-  const completeOAuth = trpc.accounts.oauthComplete.useMutation({
+  const completeClaudeCodeLogin = trpc.accounts.claudeCodeLoginComplete.useMutation({
     onSuccess: async () => {
       await afterAccountAdded(utils);
       setOpen(false);
-      setOauthCode("");
-      setOauthSession(null);
+      setCredentialsText("");
+      setClaudeCode("");
+      setClaudeCodeSession(null);
       setName("");
       setPriority(0);
-      toast.success("OAuth account added");
+      setDeviceIdOverride("");
+      toast.success("Claude Code account added");
     },
     onError: (mutationError) => setError(mutationError.message),
   });
@@ -1824,24 +1841,42 @@ function AddAccountDialog() {
     setError(null);
     try {
       const credentials: unknown = JSON.parse(credentialsText);
-      await importAccount.mutateAsync({ name: name || undefined, priority, credentials });
+      await importAccount.mutateAsync({
+        name: name || undefined,
+        priority,
+        deviceIdOverride: deviceIdOverride || null,
+        credentials,
+      });
     } catch (parseError) {
       const message = parseError instanceof Error ? parseError.message : "Invalid credentials JSON";
       setError(message);
     }
   }
 
-  async function submitOAuth(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!oauthSession) {
-      setError("Generate a login link first.");
-      return;
-    }
+  async function beginClaudeCode() {
     setError(null);
-    await completeOAuth.mutateAsync({ sessionId: oauthSession.sessionId, code: oauthCode, name: name || undefined });
+    setClaudeCode("");
+    setClaudeCodeSession(null);
+    await beginClaudeCodeLogin.mutateAsync();
   }
 
-  const busy = importAccount.isPending || beginOAuth.isPending || completeOAuth.isPending;
+  async function submitClaudeCodeLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    if (!claudeCodeSession) {
+      setError("Generate a Claude Code login link first.");
+      return;
+    }
+    await completeClaudeCodeLogin.mutateAsync({
+      sessionId: claudeCodeSession.sessionId,
+      name: name || undefined,
+      priority,
+      deviceIdOverride: deviceIdOverride || null,
+      code: claudeCode,
+    });
+  }
+
+  const busy = importAccount.isPending || beginClaudeCodeLogin.isPending || completeClaudeCodeLogin.isPending;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -1854,7 +1889,7 @@ function AddAccountDialog() {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Add Claude account</DialogTitle>
-          <DialogDescription>Import Claude Code credentials or complete Claude OAuth with a copied code.</DialogDescription>
+          <DialogDescription>Import Claude Code credentials or sign in through the Claude Code CLI.</DialogDescription>
         </DialogHeader>
         <AlertMessage message={error} />
         <div className="grid gap-2">
@@ -1872,10 +1907,19 @@ function AddAccountDialog() {
             onChange={(event) => setPriority(numberFromInput(event.target.value))}
           />
         </div>
+        <div className="grid gap-2">
+          <Label htmlFor="account-device-id">Device ID override</Label>
+          <Input
+            id="account-device-id"
+            value={deviceIdOverride}
+            onChange={(event) => setDeviceIdOverride(event.target.value)}
+            placeholder="Optional x-device-id"
+          />
+        </div>
         <Tabs defaultValue="json">
           <TabsList>
             <TabsTrigger value="json">Credentials JSON</TabsTrigger>
-            <TabsTrigger value="oauth">OAuth</TabsTrigger>
+            <TabsTrigger value="cli">Claude Code CLI</TabsTrigger>
           </TabsList>
           <TabsContent value="json">
             <form className="grid gap-4" onSubmit={submitCredentials}>
@@ -1896,31 +1940,31 @@ function AddAccountDialog() {
               </DialogFooter>
             </form>
           </TabsContent>
-          <TabsContent value="oauth">
-            <form className="grid gap-4" onSubmit={submitOAuth}>
+          <TabsContent value="cli">
+            <form className="grid gap-4" onSubmit={submitClaudeCodeLogin}>
               <div className="flex flex-col gap-2 sm:flex-row">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => beginOAuth.mutate({ name: name || undefined, priority })}
-                  disabled={busy}
-                >
-                  {beginOAuth.isPending ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+                <Button type="button" variant="outline" onClick={beginClaudeCode} disabled={busy}>
+                  {beginClaudeCodeLogin.isPending ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
                   Generate login link
                 </Button>
-                {oauthSession ? <CopyButton value={oauthSession.authUrl} label="Copy URL" /> : null}
+                {claudeCodeSession ? <CopyButton value={claudeCodeSession.authUrl} label="Copy URL" /> : null}
               </div>
-              {oauthSession ? (
-                <div className="bg-muted text-muted-foreground rounded-md px-3 py-2 text-xs break-all">{oauthSession.authUrl}</div>
+              {claudeCodeSession ? (
+                <div className="bg-muted text-muted-foreground rounded-md px-3 py-2 text-xs break-all">{claudeCodeSession.authUrl}</div>
               ) : null}
               <div className="grid gap-2">
-                <Label htmlFor="oauth-code">Claude code</Label>
-                <Input id="oauth-code" value={oauthCode} onChange={(event) => setOauthCode(event.target.value)} placeholder="code#state" />
+                <Label htmlFor="claude-code-login-code">Claude code</Label>
+                <Input
+                  id="claude-code-login-code"
+                  value={claudeCode}
+                  onChange={(event) => setClaudeCode(event.target.value)}
+                  placeholder="Paste code from Claude"
+                />
               </div>
               <DialogFooter>
-                <Button type="submit" disabled={busy || !oauthSession || oauthCode.trim().length === 0}>
-                  {completeOAuth.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                  Add OAuth account
+                <Button type="submit" disabled={busy || !claudeCodeSession || claudeCode.trim().length === 0}>
+                  {completeClaudeCodeLogin.isPending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                  Add account
                 </Button>
               </DialogFooter>
             </form>

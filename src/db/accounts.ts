@@ -3,9 +3,13 @@ import { asc, eq, sql } from "drizzle-orm";
 import { orm } from "./client";
 import { accounts as accountsTable } from "./schema";
 
+export type AccountAuthType = "oauth_refresh" | "claude_code_oauth_token";
+
 export interface Account {
   id: string;
   name: string;
+  auth_type: AccountAuthType;
+  device_id_override: string | null;
   access_token: string | null;
   refresh_token: string | null;
   expires_at: number | null;
@@ -29,6 +33,8 @@ export interface Account {
 
 export interface NewAccount {
   name: string;
+  auth_type?: AccountAuthType;
+  device_id_override?: string | null;
   access_token?: string | null;
   refresh_token?: string | null;
   expires_at?: number | null;
@@ -62,6 +68,8 @@ export function createAccount(a: NewAccount): Account {
     .values({
       id,
       name: a.name,
+      authType: a.auth_type ?? "oauth_refresh",
+      deviceIdOverride: a.device_id_override ?? null,
       accessToken: a.access_token ?? null,
       refreshToken: a.refresh_token ?? null,
       expiresAt: a.expires_at ?? null,
@@ -84,6 +92,8 @@ export function updateAccount(id: string, patch: AccountPatch): void {
   };
 
   add("name", patch.name);
+  add("authType", patch.auth_type);
+  add("deviceIdOverride", patch.device_id_override);
   add("accessToken", patch.access_token);
   add("refreshToken", patch.refresh_token);
   add("expiresAt", patch.expires_at);
@@ -126,6 +136,8 @@ export function bumpRequestCount(id: string, now: number): void {
 
 interface AccountUpdateValues {
   name?: string;
+  authType?: AccountAuthType;
+  deviceIdOverride?: string | null;
   accessToken?: string | null;
   refreshToken?: string | null;
   expiresAt?: number | null;
@@ -151,6 +163,8 @@ function toAccount(row: AccountRow): Account {
   return {
     id: row.id,
     name: row.name,
+    auth_type: isAccountAuthType(row.authType) ? row.authType : "oauth_refresh",
+    device_id_override: row.deviceIdOverride,
     access_token: row.accessToken,
     refresh_token: row.refreshToken,
     expires_at: row.expiresAt,
@@ -171,4 +185,8 @@ function toAccount(row: AccountRow): Account {
     paused: row.paused,
     pause_reason: row.pauseReason,
   };
+}
+
+function isAccountAuthType(value: string): value is AccountAuthType {
+  return value === "oauth_refresh" || value === "claude_code_oauth_token";
 }
