@@ -2,17 +2,35 @@ import { OAUTH_BETA_HEADER } from "./constants";
 
 export const DEVICE_ID_HEADER = "x-device-id";
 
+/** Headers that reveal the client's IP or proxy chain to upstream. */
+export const FORWARDED_HEADERS = [
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-forwarded-port",
+  "x-real-ip",
+  "true-client-ip",
+  "cf-connecting-ip",
+  "via",
+] as const;
+
 /**
  * Rewrite client request headers for forwarding to Anthropic with our OAuth token.
  * Mirrors better-ccflare's AnthropicProvider.prepareHeaders.
  *
  * Device-id override is header-scoped: it only rewrites an x-device-id header the
  * client already sent. Body device-id patching happens per-attempt in the proxy handler.
+ *
+ * User-agent override replaces the client's user-agent wholesale (e.g. to present
+ * the Claude Code version installed on the gateway host regardless of the client).
  */
 export function prepareRequestHeaders(
   incoming: Headers,
   accessToken: string,
   deviceIdOverride?: string | null,
+  userAgentOverride?: string | null,
+  stripForwardedHeaders = false,
 ): Headers {
   const h = new Headers(incoming);
 
@@ -20,9 +38,17 @@ export function prepareRequestHeaders(
   h.delete("authorization");
   h.delete("x-api-key");
 
+  if (stripForwardedHeaders) {
+    for (const header of FORWARDED_HEADERS) h.delete(header);
+  }
+
   h.set("authorization", `Bearer ${accessToken}`);
   if (deviceIdOverride && incoming.has(DEVICE_ID_HEADER)) {
     h.set(DEVICE_ID_HEADER, deviceIdOverride);
+  }
+  const userAgent = userAgentOverride?.trim();
+  if (userAgent) {
+    h.set("user-agent", userAgent);
   }
 
   // Ensure the OAuth beta flag is present.

@@ -1,4 +1,5 @@
 import { accountDeviceId, accountRealUuid } from "../anthropic/account-config";
+import { resolveUserAgentOverride } from "../anthropic/claude-version";
 import { API_BASE } from "../anthropic/constants";
 import { prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
 import { getValidAccessToken } from "../anthropic/token-manager";
@@ -160,8 +161,17 @@ async function attempt(
   // upstream sees a device fingerprint consistent with that account; fall back to
   // a manually configured override.
   const deviceIdOverride = accountDeviceId(account.id) ?? account.device_id_override;
-  const headers = prepareRequestHeaders(req.headers, accessToken, deviceIdOverride);
+  const headers = prepareRequestHeaders(
+    req.headers,
+    accessToken,
+    deviceIdOverride,
+    resolveUserAgentOverride(settings.userAgentOverride),
+    settings.stripForwardedHeaders,
+  );
   const outboundBody = buildAttemptBody(bodyBuf, account, context, deviceIdOverride);
+  const rawUpstreamRequest = context.rawRequest
+    ? upstreamRequestSnapshot(req.method, target, headers, outboundBody)
+    : null;
 
   let upstream: Response;
   let info;
@@ -202,6 +212,7 @@ async function attempt(
       totalMs: elapsedMs(attemptStartedAt),
       error: errorMessage(error),
       ...rawRequestFields(context.rawRequest),
+      ...rawUpstreamRequestFields(rawUpstreamRequest),
     });
     return null;
   }
@@ -224,6 +235,7 @@ async function attempt(
       totalMs: elapsedMs(attemptStartedAt),
       upstreamRequestId: upstream.headers.get("request-id"),
       ...rawRequestFields(context.rawRequest),
+      ...rawUpstreamRequestFields(rawUpstreamRequest),
       ...rawResponseFields(rawResponse),
     });
     if (!rawResponse) await discardBody(upstream);
@@ -250,6 +262,7 @@ async function attempt(
         upstreamRequestId: upstream.headers.get("request-id"),
         error: "out_of_credits",
         ...rawRequestFields(context.rawRequest),
+        ...rawUpstreamRequestFields(rawUpstreamRequest),
         ...rawResponseFields(rawResponse),
       });
       if (!rawResponse) await discardBody(upstream);
@@ -271,6 +284,7 @@ async function attempt(
       upstreamRequestId: upstream.headers.get("request-id"),
       error: info.status,
       ...rawRequestFields(context.rawRequest),
+      ...rawUpstreamRequestFields(rawUpstreamRequest),
       ...rawResponseFields(rawResponse),
     });
     if (!rawResponse) await discardBody(upstream);
@@ -294,6 +308,7 @@ async function attempt(
     upstreamRequestId: upstream.headers.get("request-id"),
     costUsd: billingCostUsd(upstream.headers),
     ...rawRequestFields(context.rawRequest),
+    ...rawUpstreamRequestFields(rawUpstreamRequest),
     ...rawResponseFields(
       context.rawRequest
         ? { headers: serializeResponseHead(upstream.status, upstream.statusText, responseHeaders), body: null }
@@ -467,9 +482,9 @@ function isDeviceIdEntry(key: string, value: unknown): boolean {
   return typeof value === "number" || typeof value === "boolean";
 }
 
-/** An account-uuid slot is an accountuuid-ish key holding a string; empty strings count so we can fill them. */
-function isAccountUuidEntry(key: string, value: unknown): boolean {
-  return normalizeIdentityKey(key) === "accountuuid" && typeof value === "string";
+/** An account-uuid slot is any accountuuid-ish key; the current value can be empty or the wrong type. */
+function isAccountUuidEntry(key: string, _value: unknown): boolean {
+  return normalizeIdentityKey(key) === "accountuuid";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -651,6 +666,49 @@ function rawRequestFields(snapshot: RawRequestSnapshot | null) {
     ? {
         rawRequestHeaders: snapshot.headers,
         rawRequestBody: snapshot.body,
+      }
+    : {};
+}
+
+/**
+ * Snapshot of the outbound gateway→Anthropic request as actually sent: rewritten
+ * headers, full target URL, and the per-attempt identity-patched body.
+ */
+function upstreamRequestSnapshot(
+  method: string,
+  target: string,
+  headers: Headers,
+  body: ArrayBuffer | null,
+): RawRequestSnapshot {
+  return {
+    headers: serializeUpstreamRequestHead(method, target, headers),
+    body: body && body.byteLength > 0 ? bufferToRawBody(body, headers.get("content-type")) : null,
+  };
+}
+
+function serializeUpstreamRequestHead(method: string, url: string, headers: Headers): string {
+  const redacted = new Headers(headers);
+  const authorization = redacted.get("authorization");
+  // The outbound authorization carries a live account OAuth token — never persist it.
+  if (authorization) {
+    redacted.set("authorization", `${authorization.split(/\s+/, 1)[0]} [redacted]`);
+  }
+  return JSON.stringify(
+    {
+      method,
+      url,
+      headers: headersObject(redacted),
+    },
+    null,
+    2,
+  );
+}
+
+function rawUpstreamRequestFields(snapshot: RawRequestSnapshot | null) {
+  return snapshot
+    ? {
+        rawUpstreamRequestHeaders: snapshot.headers,
+        rawUpstreamRequestBody: snapshot.body,
       }
     : {};
 }

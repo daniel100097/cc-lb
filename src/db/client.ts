@@ -151,6 +151,13 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       ALTER TABLE request_log ADD COLUMN raw_response_body TEXT;
     `,
   },
+  {
+    id: "007_request_log_raw_upstream_request",
+    sql: `
+      ALTER TABLE request_log ADD COLUMN raw_upstream_request_headers TEXT;
+      ALTER TABLE request_log ADD COLUMN raw_upstream_request_body TEXT;
+    `,
+  },
 ];
 
 function migrate() {
@@ -168,6 +175,8 @@ function migrate() {
   ensureColumn("request_log", "api_key_id", "TEXT");
   ensureColumn("request_log", "raw_request_headers", "TEXT");
   ensureColumn("request_log", "raw_request_body", "TEXT");
+  ensureColumn("request_log", "raw_upstream_request_headers", "TEXT");
+  ensureColumn("request_log", "raw_upstream_request_body", "TEXT");
   ensureColumn("request_log", "raw_response_headers", "TEXT");
   ensureColumn("request_log", "raw_response_body", "TEXT");
   ensureColumn("accounts", "auth_type", "TEXT NOT NULL DEFAULT 'oauth_refresh'");

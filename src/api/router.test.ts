@@ -194,4 +194,11 @@ describe("appRouter settings", () => {
     expect(settings.rawHttpLoggingEnabled).toBe(true);
     await caller.settings.update({ rawHttpLoggingEnabled: false });
   });
+
+  test("updates and clears the user-agent override", async () => {
+    const updated = await caller.settings.update({ userAgentOverride: "  claude-cli/2.0.14 (external, cli)  " });
+    expect(updated.userAgentOverride).toBe("claude-cli/2.0.14 (external, cli)");
+    const cleared = await caller.settings.update({ userAgentOverride: "" });
+    expect(cleared.userAgentOverride).toBe("");
+  });
 });

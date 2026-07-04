@@ -42,6 +42,7 @@ describe("handleProxy", () => {
     expect(logs.total).toBe(1);
     expect(logs.entries[0]?.path).toBe("/api/event_logging/batch");
     expect(logs.entries[0]?.raw_request_headers).toBeNull();
+    expect(logs.entries[0]?.raw_upstream_request_headers).toBeNull();
     expect(logs.entries[0]?.raw_response_body).toBeNull();
   });
 
@@ -310,7 +311,11 @@ describe("handleProxy", () => {
         new Request("http://cc-lb.test/v1/messages?beta=1", {
           method: "POST",
           headers: { "content-type": "application/json", authorization: "Bearer client-key" },
-          body: JSON.stringify({ model: "claude-raw-http", messages: [{ role: "user", content: "raw body marker" }] }),
+          body: JSON.stringify({
+            model: "claude-raw-http",
+            messages: [{ role: "user", content: "raw body marker" }],
+            account_uuid: "",
+          }),
         }),
         new URL("http://cc-lb.test/v1/messages?beta=1"),
       );
@@ -322,10 +327,129 @@ describe("handleProxy", () => {
       expect(logs.total).toBe(1);
       expect(logs.entries[0]?.raw_request_headers).toContain("\"authorization\": \"Bearer client-key\"");
       expect(logs.entries[0]?.raw_request_body).toContain("raw body marker");
+      const upstreamHead = logs.entries[0]?.raw_upstream_request_headers ?? "";
+      expect(upstreamHead).toContain("https://api.anthropic.com/v1/messages?beta=1");
+      expect(upstreamHead).toContain("\"authorization\": \"Bearer [redacted]\"");
+      expect(upstreamHead).not.toContain("raw-access");
+      expect(upstreamHead).toContain("oauth-2025-04-20");
+      // Upstream body is the per-attempt patched body, not the client original.
+      expect(logs.entries[0]?.raw_upstream_request_body).toContain("raw body marker");
+      expect(logs.entries[0]?.raw_upstream_request_body).toContain(account.id);
+      expect(logs.entries[0]?.raw_request_body).not.toContain(account.id);
       expect(logs.entries[0]?.raw_response_headers).toContain("\"x-upstream-debug\": \"seen\"");
       expect(logs.entries[0]?.raw_response_body).toContain("response body marker");
     } finally {
       patchSettings({ rawHttpLoggingEnabled: false });
+      restore();
+    }
+  });
+
+  test("applies the user-agent override to the upstream request", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "UA override" });
+    seedAccountCredentials(account.id, {
+      accessToken: "ua-access",
+      refreshToken: "ua-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    patchSettings({ userAgentOverride: "claude-cli/2.0.14 (external, cli)" });
+
+    const { headers: outboundHeaders, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "user-agent": "claude-cli/1.0.0 (external, cli)" },
+          body: JSON.stringify({ model: "claude-ua-override", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(outboundHeaders[0]?.get("user-agent")).toBe("claude-cli/2.0.14 (external, cli)");
+    } finally {
+      patchSettings({ userAgentOverride: "" });
+      restore();
+    }
+  });
+
+  test("passes the client user-agent upstream when no override is set", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "UA passthrough" });
+    seedAccountCredentials(account.id, {
+      accessToken: "ua-pass-access",
+      refreshToken: "ua-pass-refresh",
+      expiresAt: now + 3_600_000,
+    });
+
+    const { headers: outboundHeaders, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "user-agent": "claude-cli/1.0.0 (external, cli)" },
+          body: JSON.stringify({ model: "claude-ua-passthrough", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(outboundHeaders[0]?.get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
+    } finally {
+      restore();
+    }
+  });
+
+  test("strips forwarded headers from the upstream request when enabled", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "Strip forwarded" });
+    seedAccountCredentials(account.id, {
+      accessToken: "strip-access",
+      refreshToken: "strip-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    patchSettings({ stripForwardedHeaders: true });
+
+    const { headers: outboundHeaders, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-forwarded-for": "203.0.113.7",
+            "x-real-ip": "203.0.113.7",
+            via: "1.1 nginx",
+          },
+          body: JSON.stringify({ model: "claude-strip-forwarded", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(outboundHeaders[0]?.get("x-forwarded-for")).toBeNull();
+      expect(outboundHeaders[0]?.get("x-real-ip")).toBeNull();
+      expect(outboundHeaders[0]?.get("via")).toBeNull();
+    } finally {
+      patchSettings({ stripForwardedHeaders: false });
       restore();
     }
   });
@@ -624,6 +748,55 @@ describe("handleProxy", () => {
       expect(sentUserId.account_uuid).toBe("64f27862-b305-4e53-9ca5-f913b529f556");
       expect(sentUserId.account_uuid).not.toBe(account.id);
       expect(sentUserId.device_id).toBe("real-machine-id-hash");
+    } finally {
+      restore();
+    }
+  });
+
+  test("patches account_uuid by key presence regardless of the current value", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "Account uuid key presence" });
+    seedAccountCredentials(account.id, {
+      accessToken: "uuid-key-access",
+      refreshToken: "uuid-key-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    writeAccountClaudeJson(account.id, {
+      hasCompletedOnboarding: true,
+      accountUuid: "a960e8fc-95ac-4afc-8c38-ed0d8422cf31",
+    });
+
+    const userId = JSON.stringify({ account_uuid: "", session_id: "sess-key-presence" });
+    const { bodies: outboundBodies, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-account-uuid-key-presence",
+            messages: [],
+            account_uuid: null,
+            metadata: { user_id: userId },
+            nested: { accountUuid: 42 },
+          }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      const sent = decodeBody(outboundBodies[0]);
+      const sentUserId = JSON.parse(sent.metadata.user_id);
+      expect(sent.account_uuid).toBe("a960e8fc-95ac-4afc-8c38-ed0d8422cf31");
+      expect(sent.nested.accountUuid).toBe("a960e8fc-95ac-4afc-8c38-ed0d8422cf31");
+      expect(sentUserId.account_uuid).toBe("a960e8fc-95ac-4afc-8c38-ed0d8422cf31");
+      expect(sentUserId.session_id).toBe("sess-key-presence");
     } finally {
       restore();
     }

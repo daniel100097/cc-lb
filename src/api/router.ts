@@ -6,6 +6,7 @@ import {
   deleteAccountConfigDir,
   readCredentialsFile,
 } from "../anthropic/account-config";
+import { installedClaudeUserAgent } from "../anthropic/claude-version";
 import { probeAccount, probeTmuxSessionName } from "../anthropic/account-probe";
 import { killTmuxSession } from "../anthropic/tmux-driver";
 import type { UsageWindow } from "../anthropic/usage-panel";
@@ -75,6 +76,8 @@ const settingsPatchSchema = z
     sessionDurationMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
     overloadRetryMax: z.number().int().min(0).max(10).optional(),
     newSessionUsageCutoffPercent: z.number().int().min(1).max(100).optional(),
+    userAgentOverride: z.string().trim().max(300).optional(),
+    stripForwardedHeaders: z.boolean().optional(),
   })
   .strict();
 
@@ -247,6 +250,7 @@ export const appRouter = router({
   settings: router({
     get: publicProcedure.query(() => getSettings()),
     update: publicProcedure.input(settingsPatchSchema).mutation(({ input }) => patchSettings(input)),
+    installedUserAgent: publicProcedure.query(() => ({ userAgent: installedClaudeUserAgent() })),
   }),
 
   apiKeys: router({
@@ -521,6 +525,8 @@ function toPublicRequestLogEntry(entry: RequestLogEntry) {
     costUsd: entry.cost_usd,
     rawRequestHeaders: entry.raw_request_headers,
     rawRequestBody: entry.raw_request_body,
+    rawUpstreamRequestHeaders: entry.raw_upstream_request_headers,
+    rawUpstreamRequestBody: entry.raw_upstream_request_body,
     rawResponseHeaders: entry.raw_response_headers,
     rawResponseBody: entry.raw_response_body,
   };

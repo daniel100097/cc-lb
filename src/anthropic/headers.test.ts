@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { OAUTH_BETA_HEADER } from "./constants";
-import { DEVICE_ID_HEADER, prepareRequestHeaders, sanitizeResponseHeaders } from "./headers";
+import { DEVICE_ID_HEADER, FORWARDED_HEADERS, prepareRequestHeaders, sanitizeResponseHeaders } from "./headers";
 
 describe("Anthropic headers", () => {
   test("strips client credentials and injects OAuth bearer token", () => {
@@ -37,6 +37,45 @@ describe("Anthropic headers", () => {
 
     const overridden = prepareRequestHeaders(new Headers({ [DEVICE_ID_HEADER]: "client-device" }), "token", "account-device");
     expect(overridden.get(DEVICE_ID_HEADER)).toBe("account-device");
+  });
+
+  test("replaces the client user-agent when an override is set", () => {
+    const headers = prepareRequestHeaders(
+      new Headers({ "user-agent": "claude-cli/1.0.0 (external, cli)" }),
+      "token",
+      null,
+      "claude-cli/2.0.14 (external, cli)",
+    );
+    expect(headers.get("user-agent")).toBe("claude-cli/2.0.14 (external, cli)");
+  });
+
+  test("passes the client user-agent through when the override is empty or blank", () => {
+    const incoming = new Headers({ "user-agent": "claude-cli/1.0.0 (external, cli)" });
+    expect(prepareRequestHeaders(incoming, "token").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
+    expect(prepareRequestHeaders(incoming, "token", null, "").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
+    expect(prepareRequestHeaders(incoming, "token", null, "   ").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
+  });
+
+  test("strips forwarded headers only when enabled", () => {
+    const incoming = () =>
+      new Headers({
+        "x-forwarded-for": "203.0.113.7",
+        "x-forwarded-proto": "https",
+        "x-real-ip": "203.0.113.7",
+        via: "1.1 nginx",
+        forwarded: "for=203.0.113.7",
+        "content-type": "application/json",
+      });
+
+    const kept = prepareRequestHeaders(incoming(), "token");
+    expect(kept.get("x-forwarded-for")).toBe("203.0.113.7");
+    expect(kept.get("via")).toBe("1.1 nginx");
+
+    const stripped = prepareRequestHeaders(incoming(), "token", null, null, true);
+    for (const header of FORWARDED_HEADERS) {
+      expect(stripped.get(header)).toBeNull();
+    }
+    expect(stripped.get("content-type")).toBe("application/json");
   });
 
   test("sanitizes decompression-sensitive response headers", () => {
