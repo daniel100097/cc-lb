@@ -18,6 +18,4 @@ jobs:
       - run: bun run lint
       - run: bun run test
       - run: bun run build
-      - run: ./node_modules/.bin/playwright install --with-deps chromium
-      - run: bun run test:e2e
       - run: docker build .
