@@ -17,6 +17,7 @@ describe("format helpers", () => {
 
   test("formats compact numbers and durations", () => {
     expect(compactNumber(1_200)).toContain("1");
+    expect(durationMs(30_000)).toBe("30 sec");
     expect(durationMs(30 * 60_000)).toBe("30 min");
     expect(durationMs(2 * 60 * 60_000)).toBe("2 hr");
   });

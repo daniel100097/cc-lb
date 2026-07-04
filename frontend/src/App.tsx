@@ -335,8 +335,11 @@ function DashboardPage() {
   );
   const stats = trpc.stats.useQuery(undefined, { refetchInterval: 10_000 });
   const accounts = trpc.accounts.list.useQuery(undefined, { refetchInterval: 10_000 });
-  const recentRequests = trpc.requests.list.useQuery(
-    {
+  // since must be referentially stable per timeframe: a fresh Date.now()-based
+  // value on every render would change the query key each render, so the query
+  // never settles (perma-loading empty panel + a refetch storm).
+  const recentRequestsInput = useMemo(
+    () => ({
       limit: 8,
       offset: 0,
       accountId: null,
@@ -344,9 +347,13 @@ function DashboardPage() {
       model: null,
       since: sinceForDashboardTimeframe(timeframe),
       search: null,
-    },
-    { refetchInterval: 15_000, refetchOnWindowFocus: true },
+    }),
+    [timeframe],
   );
+  const recentRequests = trpc.requests.list.useQuery(recentRequestsInput, {
+    refetchInterval: 15_000,
+    refetchOnWindowFocus: true,
+  });
 
   const dashboardStats = buildDashboardStats(overview.data, stats.data, accounts.data ?? [], recentRequests.data?.entries ?? []);
   const primaryDonut = buildDashboardDonut(overview.data, accounts.data ?? [], "primary");
@@ -393,6 +400,7 @@ function DashboardPage() {
           <DashboardMetricCard key={stat.label} stat={stat} index={index} />
         ))}
       </div>
+      <ConnectClaudeCodeCard />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
         <div className="grid gap-4 lg:grid-cols-2">
           <DonutChart
@@ -448,6 +456,39 @@ function DashboardPage() {
         />
       </section>
     </div>
+  );
+}
+
+function ConnectClaudeCodeCard() {
+  const settings = trpc.settings.get.useQuery();
+  const apiKeyAuthEnabled = Boolean(settings.data?.apiKeyAuthEnabled);
+  const origin = window.location.origin;
+  const tokenValue = apiKeyAuthEnabled ? "<your cc-lb API key>" : "cc-lb";
+  const snippet = `export ANTHROPIC_BASE_URL=${origin}\nexport ANTHROPIC_AUTH_TOKEN=${tokenValue}`;
+
+  return (
+    <section className="rounded-xl border bg-card p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 font-semibold">
+            <Code2 className="size-4" />
+            Connect Claude Code
+          </h2>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Set these environment variables to route Claude Code through this proxy.
+          </p>
+        </div>
+        <CopyButton value={snippet} label="Copy env vars" />
+      </div>
+      <pre className="bg-muted/50 mt-3 overflow-x-auto rounded-md border p-3 font-mono text-xs leading-relaxed">
+        <code>{snippet}</code>
+      </pre>
+      <p className="text-muted-foreground mt-2 text-xs">
+        {apiKeyAuthEnabled
+          ? "API key auth is enabled: create a key on the APIs page and use its secret as ANTHROPIC_AUTH_TOKEN."
+          : "API key auth is disabled: any non-empty ANTHROPIC_AUTH_TOKEN works — the proxy replaces it with the routed account's OAuth token."}
+      </p>
+    </section>
   );
 }
 

@@ -17,6 +17,7 @@ export function compactNumber(value: number): string {
 }
 
 export function durationMs(value: number): string {
+  if (value < 60_000) return `${Math.round(value / 1000)} sec`;
   const minutes = Math.round(value / 60_000);
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.round(minutes / 60);
