@@ -132,6 +132,7 @@ function spawnClaudeCodeSetupToken(): Bun.Subprocess<"pipe", "pipe", "pipe"> {
     env: {
       ...process.env,
       TERM: process.env.TERM ?? "xterm-256color",
+      CLAUDE_CODE_NO_FLICKER: "0",
       CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? "./data/claude",
     },
   });

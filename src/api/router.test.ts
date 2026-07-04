@@ -93,7 +93,7 @@ describe("appRouter accounts", () => {
 
   test("adds Claude Code accounts through the CLI login flow and updates device override", async () => {
     process.env.CLAUDE_CODE_LOGIN_COMMAND =
-      "printf 'https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router\\nPaste code here if prompted > '; read code; printf '\\nCLAUDE_CODE_OAUTH_TOKEN=claude-code-oauth-token-value-for-router\\n'";
+      "test \"$CLAUDE_CODE_NO_FLICKER\" = '0' || exit 42; printf 'https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router\\nPaste code here if prompted > '; read code; printf '\\nCLAUDE_CODE_OAUTH_TOKEN=claude-code-oauth-token-value-for-router\\n'";
 
     const login = await caller.accounts.claudeCodeLoginBegin();
     expect(login.authUrl).toBe("https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router");
