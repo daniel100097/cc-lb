@@ -64,7 +64,7 @@ test.describe("cc-lb dashboard with seeded data", () => {
     const tokenRow = page.getByRole("row").filter({ hasText: "CLI E2E" });
     await expect(tokenRow).toBeVisible();
     await expect(tokenRow.getByText("device device-e2e")).toBeVisible();
-    await expect(tokenRow.getByTitle("Re-authenticate")).toHaveCount(0);
+    await expect(tokenRow.getByTitle("Re-authenticate")).toHaveCount(1);
 
     await page.getByRole("row").filter({ hasText: "Needs reauth" }).getByTitle("Re-authenticate").click();
     const reauthPopupPromise = page.waitForEvent("popup");

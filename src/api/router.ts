@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { beginOAuth, completeOAuth, consumeOAuthSession } from "../anthropic/oauth";
 import { beginClaudeCodeLogin, completeClaudeCodeLogin, getClaudeCodeLoginStatus } from "../anthropic/claude-code-cli";
-import { parseClaudeCodeOAuthToken, parseCredentials } from "../anthropic/credentials";
+import { parseCredentials } from "../anthropic/credentials";
 import { checkRefreshTokenHealth } from "../anthropic/token-health";
 import { STRATEGIES } from "../balancer/strategies";
 import { isAvailable, toState } from "../balancer/types";
@@ -204,7 +204,7 @@ export const appRouter = router({
 
     claudeCodeLoginComplete: publicProcedure.input(claudeCodeLoginCompleteSchema).mutation(async ({ input }) => {
       const login = await completeClaudeCodeLogin(input.sessionId, input.code);
-      const parsed = parseClaudeCodeOAuthToken(login.token, input.name);
+      const parsed = parseCredentials(login.credentials, input.name);
       const account = createAccount({
         ...parsed,
         priority: input.priority ?? parsed.priority,

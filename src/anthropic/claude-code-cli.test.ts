@@ -5,6 +5,7 @@ import {
   cleanClaudeCodeOutput,
   extractClaudeCodeAuthUrl,
   extractClaudeCodeTokenFromOutput,
+  getClaudeCodeCredentialsPath,
   getClaudeCodeTmuxSocketPath,
   redactClaudeCodeOutput,
   resetClaudeCodeLoginSessionsForTests,
@@ -18,14 +19,15 @@ describe("Claude Code CLI login parsing", () => {
   test("builds a local Claude CLI command instead of relying on PATH lookup", () => {
     const env = buildClaudeCodeLoginEnv({});
 
-    expect(env.CLAUDE_CODE_LOGIN_COMMAND).toBe(`'${process.cwd()}/node_modules/.bin/claude' setup-token`);
+    expect(env.CLAUDE_CODE_LOGIN_COMMAND).toBe(`'${process.cwd()}/node_modules/.bin/claude'`);
     expect(env.PATH?.startsWith(`${process.cwd()}/node_modules/.bin:`)).toBe(true);
     expect(env.CLAUDE_CODE_NO_FLICKER).toBe("0");
   });
 
-  test("uses an explicit tmux socket path", () => {
+  test("uses explicit tmux and credentials paths", () => {
     expect(getClaudeCodeTmuxSocketPath({})).toBe("/tmp/cc-lb-claude-code.tmux");
     expect(getClaudeCodeTmuxSocketPath({ CLAUDE_CODE_TMUX_SOCKET: "/tmp/custom.sock" })).toBe("/tmp/custom.sock");
+    expect(getClaudeCodeCredentialsPath({ CLAUDE_CONFIG_DIR: "/tmp/claude" })).toBe("/tmp/claude/.credentials.json");
   });
 
   test("builds a tmux command that keeps the pane available for capture", () => {

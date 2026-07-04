@@ -23,7 +23,7 @@ dashboard, Docker, and CI are implemented. See [`plans/`](plans/) and
 
 Two ways, from the dashboard:
 1. **Paste credentials JSON** — the contents of `~/.claude/.credentials.json`.
-2. **Claude Code CLI login** — cc-lb runs `claude setup-token`, displays the login link, then sends your pasted Claude code back to the CLI and imports the resulting token.
+2. **Claude Code CLI login** — cc-lb runs the normal `claude` TUI in tmux, displays the login link, sends your pasted Claude code back to the CLI, and imports the generated `.credentials.json`.
 
 With Docker, the image includes the `claude` CLI and the dashboard drives this
 flow from the **Claude Code CLI** tab.

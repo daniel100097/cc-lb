@@ -2,10 +2,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 
 const dbPath = `/tmp/cc-lb-router-test-${process.pid}.db`;
+const claudeConfigDir = `/tmp/cc-lb-router-claude-${process.pid}`;
 for (const suffix of ["", "-wal", "-shm"]) {
   rmSync(`${dbPath}${suffix}`, { force: true });
 }
+rmSync(claudeConfigDir, { force: true, recursive: true });
 process.env.DB_PATH = dbPath;
+process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
 
 const { appRouter } = await import("./router");
 const { createAccount, updateAccount } = await import("../db/accounts");
@@ -17,9 +20,11 @@ const caller = appRouter.createCaller({ req: new Request("http://cc-lb.test") })
 afterAll(() => {
   resetClaudeCodeLoginSessionsForTests();
   delete process.env.CLAUDE_CODE_LOGIN_COMMAND;
+  delete process.env.CLAUDE_CONFIG_DIR;
   for (const suffix of ["", "-wal", "-shm"]) {
     rmSync(`${dbPath}${suffix}`, { force: true });
   }
+  rmSync(claudeConfigDir, { force: true, recursive: true });
 });
 
 describe("appRouter accounts", () => {
@@ -93,7 +98,7 @@ describe("appRouter accounts", () => {
 
   test("adds Claude Code accounts through the CLI login flow and updates device override", async () => {
     process.env.CLAUDE_CODE_LOGIN_COMMAND =
-      "test \"$CLAUDE_CODE_NO_FLICKER\" = '0' || exit 42; printf 'https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router\\nPaste code here if prompted > '; read code; printf '\\nCLAUDE_CODE_OAUTH_TOKEN=claude-code-oauth-token-value-for-router\\n'";
+      "test \"$CLAUDE_CODE_NO_FLICKER\" = '0' || exit 42; printf 'Choose the text style that looks best with your terminal\\n'; read theme; printf 'Select login method:\\n'; read method; printf 'https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router\\nPaste code here if prompted > '; read code; printf '\\nSecurity notes:\\nPress Enter to continue...\\n'; read security; printf '\\nQuick safety check: Is this a project you created or one you trust?\\n1. Yes, I trust this folder\\nEnter to confirm\\n'; read trust; mkdir -p \"$CLAUDE_CONFIG_DIR\"; printf '%s' '{\"claudeAiOauth\":{\"accessToken\":\"access-router\",\"refreshToken\":\"refresh-router\",\"expiresAt\":1800000000000,\"scopes\":[\"user:inference\"]}}' > \"$CLAUDE_CONFIG_DIR/.credentials.json\"; printf '\\nWelcome back Router!\\nTips for getting started\\n'; sleep 30";
 
     const login = await caller.accounts.claudeCodeLoginBegin();
     expect(login.authUrl).toBe("https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router");
@@ -108,7 +113,8 @@ describe("appRouter accounts", () => {
       name: "Claude Code CLI",
       deviceIdOverride: "device-a",
     });
-    expect(account.authType).toBe("claude_code_oauth_token");
+    expect(account.authType).toBe("oauth_refresh");
+    expect(account.tokenHealth.requiresReauth).toBe(false);
     expect(account.deviceIdOverride).toBe("device-a");
     expect(account.status).toBe("active");
 
