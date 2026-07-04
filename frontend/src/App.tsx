@@ -1796,7 +1796,11 @@ function AddAccountDialog() {
   const [deviceIdOverride, setDeviceIdOverride] = useState("");
   const [credentialsText, setCredentialsText] = useState("");
   const [claudeCode, setClaudeCode] = useState("");
-  const [claudeCodeSession, setClaudeCodeSession] = useState<{ authUrl: string; sessionId: string } | null>(null);
+  const [claudeCodeSession, setClaudeCodeSession] = useState<{
+    authUrl: string;
+    sessionId: string;
+    tmuxAttachCommand: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const utils = trpc.useUtils();
 
@@ -1963,6 +1967,24 @@ function AddAccountDialog() {
               {claudeCodeSession ? (
                 <div className="grid gap-2">
                   <div className="flex items-center justify-between gap-3">
+                    <Label htmlFor="claude-code-tmux">Tmux attach</Label>
+                    <CopyButton
+                      value={claudeCodeLoginStatus.data?.tmuxAttachCommand ?? claudeCodeSession.tmuxAttachCommand}
+                      label="Copy command"
+                    />
+                  </div>
+                  <pre
+                    id="claude-code-tmux"
+                    aria-label="Tmux attach command"
+                    className="bg-muted text-muted-foreground overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap"
+                  >
+                    {claudeCodeLoginStatus.data?.tmuxAttachCommand ?? claudeCodeSession.tmuxAttachCommand}
+                  </pre>
+                </div>
+              ) : null}
+              {claudeCodeSession ? (
+                <div className="grid gap-2">
+                  <div className="flex items-center justify-between gap-3">
                     <Label htmlFor="claude-code-output">Claude Code output</Label>
                     <span className="text-muted-foreground text-xs">{claudeCodeLoginStatus.data?.status ?? "starting"}</span>
                   </div>
@@ -1971,7 +1993,9 @@ function AddAccountDialog() {
                     aria-label="Claude Code output"
                     className="bg-muted text-muted-foreground max-h-48 overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap"
                   >
-                    {claudeCodeLoginStatus.data?.output || "Waiting for Claude Code output..."}
+                    {claudeCodeLoginStatus.error?.message ||
+                      claudeCodeLoginStatus.data?.output ||
+                      "Waiting for Claude Code output..."}
                   </pre>
                 </div>
               ) : null}

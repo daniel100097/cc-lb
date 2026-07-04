@@ -55,6 +55,7 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await expect(
       dialog.getByText("https://claude.com/cai/oauth/authorize?code=true&client_id=e2e&state=playwright", { exact: true }).first(),
     ).toBeVisible();
+    await expect(dialog.getByLabel("Tmux attach command")).toContainText("tmux -S '/tmp/cc-lb-claude-code.tmux' attach -t");
     await expect(dialog.getByLabel("Claude Code output")).toContainText("Paste code here if prompted");
     await dialog.getByRole("textbox", { name: "Claude code" }).fill("code-from-claude");
     await dialog.getByRole("button", { name: "Add account" }).click();

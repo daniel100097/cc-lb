@@ -97,8 +97,10 @@ describe("appRouter accounts", () => {
 
     const login = await caller.accounts.claudeCodeLoginBegin();
     expect(login.authUrl).toBe("https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router");
+    expect(login.tmuxAttachCommand).toContain("tmux -S '/tmp/cc-lb-claude-code.tmux' attach -t 'cc-lb-claude-");
     const status = await caller.accounts.claudeCodeLoginStatus({ sessionId: login.sessionId });
     expect(status.output).toContain("Paste code here if prompted");
+    expect(status.tmuxAttachCommand).toBe(login.tmuxAttachCommand);
 
     const account = await caller.accounts.claudeCodeLoginComplete({
       sessionId: login.sessionId,

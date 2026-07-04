@@ -18,8 +18,9 @@ RUN bun node_modules/@anthropic-ai/claude-code/install.cjs
 RUN claude --version
 COPY src ./src
 COPY --from=build /app/public ./public
-RUN mkdir -p /app/data/claude
+RUN mkdir -p /app/data/claude && chown -R bun:bun /app/data
 VOLUME /app/data
 EXPOSE 8484
 HEALTHCHECK --interval=30s --timeout=3s CMD bun src/healthcheck.ts || exit 1
+USER bun
 CMD ["bun", "src/index.ts"]
