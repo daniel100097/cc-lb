@@ -97,6 +97,8 @@ describe("appRouter accounts", () => {
 
     const login = await caller.accounts.claudeCodeLoginBegin();
     expect(login.authUrl).toBe("https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router");
+    const status = await caller.accounts.claudeCodeLoginStatus({ sessionId: login.sessionId });
+    expect(status.output).toContain("Paste code here if prompted");
 
     const account = await caller.accounts.claudeCodeLoginComplete({
       sessionId: login.sessionId,

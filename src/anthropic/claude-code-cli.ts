@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import { findClaudeCodeOAuthToken } from "./credentials";
 
 const LOGIN_URL_TIMEOUT_MS = 30_000;
-const COMPLETE_TIMEOUT_MS = 120_000;
+const COMPLETE_TIMEOUT_MS = 5 * 60_000;
 const SESSION_TTL_MS = 10 * 60 * 1000;
 const MAX_OUTPUT_CHARS = 80_000;
 const ESC = 27;
 const BEL = 7;
 
-type LoginStatus = "starting" | "waiting_for_code" | "complete" | "failed";
+type LoginStatus = "starting" | "waiting_for_code" | "waiting_for_token" | "complete" | "failed";
 
 interface Waiter {
   check: (output: string) => boolean;
@@ -18,7 +18,7 @@ interface Waiter {
 
 interface LoginSession {
   id: string;
-  process: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  tmuxName: string;
   createdAt: number;
   output: string;
   status: LoginStatus;
@@ -26,6 +26,8 @@ interface LoginSession {
   exited: boolean;
   exitCode: number | null;
   waiters: Waiter[];
+  pollTimer: Timer | null;
+  refreshing: boolean;
 }
 
 const sessions = new Map<string, LoginSession>();
@@ -39,14 +41,24 @@ export interface ClaudeCodeLoginCompleteResult {
   token: string;
 }
 
+export interface ClaudeCodeLoginStatusResult {
+  status: LoginStatus;
+  authUrl: string | null;
+  output: string;
+  exited: boolean;
+  exitCode: number | null;
+  tokenReady: boolean;
+}
+
 export async function beginClaudeCodeLogin(now = Date.now()): Promise<ClaudeCodeLoginBeginResult> {
   cleanupExpiredSessions(now);
 
   const id = randomUUID();
-  const child = spawnClaudeCodeSetupToken();
+  const tmuxName = tmuxSessionName(id);
+  await startTmuxSession(tmuxName, buildClaudeCodeLoginEnv(process.env));
   const session: LoginSession = {
     id,
-    process: child,
+    tmuxName,
     createdAt: now,
     output: "",
     status: "starting",
@@ -54,19 +66,12 @@ export async function beginClaudeCodeLogin(now = Date.now()): Promise<ClaudeCode
     exited: false,
     exitCode: null,
     waiters: [],
+    pollTimer: null,
+    refreshing: false,
   };
   sessions.set(id, session);
-
-  readProcessOutput(session, child.stdout);
-  readProcessOutput(session, child.stderr);
-  void child.exited.then((exitCode) => {
-    session.exited = true;
-    session.exitCode = exitCode;
-    if (session.status !== "complete") {
-      session.status = "failed";
-      rejectWaiters(session, new Error(`Claude Code login exited before completion (${exitCode}).${outputHint(session.output)}`));
-    }
-  });
+  startPolling(session);
+  await refreshTmuxOutput(session);
 
   const authUrl = await waitForOutput(session, extractClaudeCodeAuthUrl, LOGIN_URL_TIMEOUT_MS, "Claude Code login URL");
   session.authUrl = authUrl;
@@ -77,18 +82,44 @@ export async function beginClaudeCodeLogin(now = Date.now()): Promise<ClaudeCode
 export async function completeClaudeCodeLogin(sessionId: string, code: string): Promise<ClaudeCodeLoginCompleteResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error("Claude Code login session expired or not found");
-  if (session.status !== "waiting_for_code") throw new Error("Claude Code login session is not waiting for a code");
+  if (session.status !== "waiting_for_code" && session.status !== "waiting_for_token") {
+    throw new Error("Claude Code login session is not waiting for a code");
+  }
 
   const trimmed = code.trim();
   if (!trimmed) throw new Error("Claude Code login code is required");
 
-  await session.process.stdin.write(`${trimmed}\n`);
-  await session.process.stdin.flush();
+  const existingToken = extractClaudeCodeTokenFromOutput(session.output);
+  if (existingToken) {
+    return completeSessionWithToken(session, existingToken);
+  }
+
+  if (session.status === "waiting_for_code") {
+    await sendTmuxLiteral(session.tmuxName, trimmed);
+    session.status = "waiting_for_token";
+  }
 
   const token = await waitForOutput(session, extractClaudeCodeTokenFromOutput, COMPLETE_TIMEOUT_MS, "Claude Code OAuth token");
+  return completeSessionWithToken(session, token);
+}
+
+export async function getClaudeCodeLoginStatus(sessionId: string): Promise<ClaudeCodeLoginStatusResult> {
+  const session = sessions.get(sessionId);
+  if (!session) throw new Error("Claude Code login session expired or not found");
+  await refreshTmuxOutput(session);
+  return {
+    status: session.status,
+    authUrl: session.authUrl,
+    output: redactClaudeCodeOutput(cleanClaudeCodeOutput(session.output)).trim().slice(-12_000),
+    exited: session.exited,
+    exitCode: session.exitCode,
+    tokenReady: extractClaudeCodeTokenFromOutput(session.output) !== null,
+  };
+}
+
+function completeSessionWithToken(session: LoginSession, token: string): ClaudeCodeLoginCompleteResult {
   session.status = "complete";
   sessions.delete(session.id);
-  await session.process.stdin.end();
   cleanupProcess(session);
   return { token };
 }
@@ -116,21 +147,18 @@ export function cleanClaudeCodeOutput(output: string): string {
   return stripControlChars(stripAnsiSequences(output)).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
+export function redactClaudeCodeOutput(output: string): string {
+  return output.replace(
+    /((?:export\s+)?CLAUDE_CODE_OAUTH_TOKEN\s*=\s*)(?:"[^"]+"|'[^']+'|\S+)/g,
+    "$1[redacted]",
+  );
+}
+
 export function resetClaudeCodeLoginSessionsForTests(): void {
   for (const session of sessions.values()) {
     cleanupProcess(session);
   }
   sessions.clear();
-}
-
-function spawnClaudeCodeSetupToken(): Bun.Subprocess<"pipe", "pipe", "pipe"> {
-  const helperPath = new URL("./claude-code-pty.py", import.meta.url).pathname;
-  return Bun.spawn(["python3", helperPath], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: buildClaudeCodeLoginEnv(process.env),
-  });
 }
 
 export function buildClaudeCodeLoginEnv(baseEnv: NodeJS.ProcessEnv): Record<string, string> {
@@ -157,28 +185,50 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
-function readProcessOutput(session: LoginSession, stream: ReadableStream<Uint8Array>): void {
-  const decoder = new TextDecoder();
-  void (async () => {
-    try {
-      for await (const chunk of stream) {
-        appendOutput(session, decoder.decode(chunk, { stream: true }));
-      }
-    } catch (error) {
-      if (!session.exited) {
-        rejectWaiters(session, new Error(error instanceof Error ? error.message : "Failed reading Claude Code output"));
-      }
-    }
-  })();
+function startPolling(session: LoginSession): void {
+  session.pollTimer = setInterval(() => {
+    void refreshTmuxOutput(session);
+  }, 500);
 }
 
-function appendOutput(session: LoginSession, chunk: string): void {
-  session.output = `${session.output}${chunk}`.slice(-MAX_OUTPUT_CHARS);
+async function refreshTmuxOutput(session: LoginSession): Promise<void> {
+  if (session.refreshing) return;
+  session.refreshing = true;
+  try {
+    const output = await runTmux(["capture-pane", "-pt", session.tmuxName, "-S", "-10000"]);
+    setOutput(session, output);
+  } catch {
+    if (session.status !== "complete") {
+      session.exited = true;
+      session.status = "failed";
+      rejectWaiters(session, new Error(`Claude Code tmux session is unavailable.${outputHint(session.output)}`));
+    }
+  } finally {
+    session.refreshing = false;
+  }
+}
+
+function setOutput(session: LoginSession, output: string): void {
+  session.output = output.slice(-MAX_OUTPUT_CHARS);
   for (const waiter of session.waiters.slice()) {
     if (!waiter.check(session.output)) continue;
     clearTimeout(waiter.timeout);
     session.waiters = session.waiters.filter((entry) => entry !== waiter);
   }
+  updateExitMarker(session);
+}
+
+function updateExitMarker(session: LoginSession): void {
+  const exit = /\[cc-lb\] Claude Code process exited with status (\d+)/.exec(cleanClaudeCodeOutput(session.output));
+  if (!exit) return;
+  session.exited = true;
+  session.exitCode = Number(exit[1]);
+  if (session.status === "complete" || extractClaudeCodeTokenFromOutput(session.output)) return;
+  session.status = "failed";
+  rejectWaiters(
+    session,
+    new Error(`Claude Code login exited before completion (${session.exitCode}).${outputHint(session.output)}`),
+  );
 }
 
 function waitForOutput<T>(
@@ -230,10 +280,9 @@ function cleanupExpiredSessions(now: number): void {
 }
 
 function cleanupProcess(session: LoginSession): void {
-  if (session.exited) return;
-  setTimeout(() => {
-    if (!session.exited) session.process.kill();
-  }, 2_000);
+  if (session.pollTimer) clearInterval(session.pollTimer);
+  session.pollTimer = null;
+  void runTmux(["kill-session", "-t", session.tmuxName]).catch(() => {});
 }
 
 function outputHint(output: string): string {
@@ -290,4 +339,71 @@ function stripControlChars(input: string): string {
     output += char;
   }
   return output;
+}
+
+function tmuxSessionName(id: string): string {
+  return `cc-lb-claude-${id.replaceAll("-", "").slice(0, 24)}`;
+}
+
+async function startTmuxSession(sessionName: string, env: Record<string, string>): Promise<void> {
+  const command = buildTmuxLoginCommand(env);
+  try {
+    await runTmux(["new-session", "-d", "-s", sessionName, "-x", "500", "-y", "40", "-c", process.cwd(), command]);
+  } catch (error) {
+    throw new Error(`Failed to start tmux for Claude Code login. Ensure tmux is installed. ${errorMessage(error)}`);
+  }
+}
+
+export function buildTmuxLoginCommand(env: Record<string, string>): string {
+  const exports = [
+    ["PATH", env.PATH],
+    ["TERM", env.TERM],
+    ["CLAUDE_CODE_NO_FLICKER", env.CLAUDE_CODE_NO_FLICKER],
+    ["CLAUDE_CONFIG_DIR", env.CLAUDE_CONFIG_DIR],
+  ]
+    .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
+    .join("; ");
+  return [
+    "stty cols 500 rows 40 || true",
+    exports,
+    `(${env.CLAUDE_CODE_LOGIN_COMMAND})`,
+    'status=$?',
+    'printf "\\n[cc-lb] Claude Code process exited with status %s\\n" "$status"',
+    "sleep 600",
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+async function sendTmuxLiteral(sessionName: string, value: string): Promise<void> {
+  await runTmux(["send-keys", "-t", sessionName, "-l", value]);
+  await runTmux(["send-keys", "-t", sessionName, "Enter"]);
+}
+
+async function runTmux(args: string[]): Promise<string> {
+  let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  try {
+    proc = Bun.spawn(["tmux", ...args], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: buildClaudeCodeLoginEnv(process.env),
+    });
+  } catch (error) {
+    throw new Error(`tmux failed to start: ${errorMessage(error)}`);
+  }
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(stderr.trim() || stdout.trim() || `tmux exited with ${exitCode}`);
+  }
+  return stdout;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

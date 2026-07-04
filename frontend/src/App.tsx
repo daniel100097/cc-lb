@@ -1835,6 +1835,14 @@ function AddAccountDialog() {
     },
     onError: (mutationError) => setError(mutationError.message),
   });
+  const claudeCodeLoginStatus = trpc.accounts.claudeCodeLoginStatus.useQuery(
+    { sessionId: claudeCodeSession?.sessionId ?? "" },
+    {
+      enabled: Boolean(claudeCodeSession),
+      refetchInterval: 1_000,
+      retry: false,
+    },
+  );
 
   async function submitCredentials(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1951,6 +1959,21 @@ function AddAccountDialog() {
               </div>
               {claudeCodeSession ? (
                 <div className="bg-muted text-muted-foreground rounded-md px-3 py-2 text-xs break-all">{claudeCodeSession.authUrl}</div>
+              ) : null}
+              {claudeCodeSession ? (
+                <div className="grid gap-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label htmlFor="claude-code-output">Claude Code output</Label>
+                    <span className="text-muted-foreground text-xs">{claudeCodeLoginStatus.data?.status ?? "starting"}</span>
+                  </div>
+                  <pre
+                    id="claude-code-output"
+                    aria-label="Claude Code output"
+                    className="bg-muted text-muted-foreground max-h-48 overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap"
+                  >
+                    {claudeCodeLoginStatus.data?.output || "Waiting for Claude Code output..."}
+                  </pre>
+                </div>
               ) : null}
               <div className="grid gap-2">
                 <Label htmlFor="claude-code-login-code">Claude code</Label>

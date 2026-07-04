@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   buildClaudeCodeLoginEnv,
+  buildTmuxLoginCommand,
   cleanClaudeCodeOutput,
   extractClaudeCodeAuthUrl,
   extractClaudeCodeTokenFromOutput,
+  redactClaudeCodeOutput,
   resetClaudeCodeLoginSessionsForTests,
 } from "./claude-code-cli";
 
@@ -18,6 +20,20 @@ describe("Claude Code CLI login parsing", () => {
     expect(env.CLAUDE_CODE_LOGIN_COMMAND).toBe(`'${process.cwd()}/node_modules/.bin/claude' setup-token`);
     expect(env.PATH?.startsWith(`${process.cwd()}/node_modules/.bin:`)).toBe(true);
     expect(env.CLAUDE_CODE_NO_FLICKER).toBe("0");
+  });
+
+  test("builds a tmux command that keeps the pane available for capture", () => {
+    const command = buildTmuxLoginCommand({
+      PATH: "/tmp/bin",
+      TERM: "xterm-256color",
+      CLAUDE_CODE_NO_FLICKER: "0",
+      CLAUDE_CONFIG_DIR: "/tmp/claude",
+      CLAUDE_CODE_LOGIN_COMMAND: "printf ready",
+    });
+
+    expect(command).toContain("printf ready");
+    expect(command).toContain("[cc-lb] Claude Code process exited with status");
+    expect(command).toContain("sleep 600");
   });
 
   test("extracts the authorize URL from wrapped TUI output", () => {
@@ -39,6 +55,10 @@ describe("Claude Code CLI login parsing", () => {
     expect(extractClaudeCodeTokenFromOutput("Done\nCLAUDE_CODE_OAUTH_TOKEN='claude-code-oauth-token-value'")).toBe(
       "claude-code-oauth-token-value",
     );
+  });
+
+  test("redacts OAuth token env vars from displayed output", () => {
+    expect(redactClaudeCodeOutput("CLAUDE_CODE_OAUTH_TOKEN='secret-token'")).toBe("CLAUDE_CODE_OAUTH_TOKEN=[redacted]");
   });
 
   test("cleans ansi cursor controls", () => {

@@ -52,7 +52,10 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await dialog.getByLabel("Device ID override").fill("device-e2e");
     await dialog.getByRole("tab", { name: "Claude Code CLI" }).click();
     await dialog.getByRole("button", { name: "Generate login link" }).click();
-    await expect(dialog.getByText("https://claude.com/cai/oauth/authorize?code=true&client_id=e2e&state=playwright")).toBeVisible();
+    await expect(
+      dialog.getByText("https://claude.com/cai/oauth/authorize?code=true&client_id=e2e&state=playwright", { exact: true }).first(),
+    ).toBeVisible();
+    await expect(dialog.getByLabel("Claude Code output")).toContainText("Paste code here if prompted");
     await dialog.getByRole("textbox", { name: "Claude code" }).fill("code-from-claude");
     await dialog.getByRole("button", { name: "Add account" }).click();
 
