@@ -13,8 +13,10 @@ export interface Settings {
   overloadRetryMax: number;
   /** Accounts at/above this % of the 5h session or weekly window get no new sticky sessions. */
   newSessionUsageCutoffPercent: number;
-  /** Sent upstream instead of the client's user-agent; empty passes the client value through. */
+  /** Sent upstream instead of the client's user-agent; empty passes the client value through, "auto" tracks the bundled Claude Code version. */
   userAgentOverride: string;
+  /** Remove forwarded-for/via/real-ip headers before sending upstream. */
+  stripForwardedHeaders: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -29,6 +31,7 @@ export const DEFAULT_SETTINGS: Settings = {
   overloadRetryMax: 2,
   newSessionUsageCutoffPercent: 95,
   userAgentOverride: "",
+  stripForwardedHeaders: false,
 };
 
 export function getSettings(): Settings {
@@ -61,6 +64,10 @@ export function getSettings(): Settings {
       DEFAULT_SETTINGS.newSessionUsageCutoffPercent,
     ),
     userAgentOverride: stored.userAgentOverride ?? DEFAULT_SETTINGS.userAgentOverride,
+    stripForwardedHeaders:
+      stored.stripForwardedHeaders === undefined
+        ? DEFAULT_SETTINGS.stripForwardedHeaders
+        : stored.stripForwardedHeaders === "true",
   };
 }
 
@@ -84,6 +91,9 @@ export function patchSettings(patch: Partial<Settings>): Settings {
     upsertSetting("newSessionUsageCutoffPercent", String(patch.newSessionUsageCutoffPercent));
   }
   if (patch.userAgentOverride !== undefined) upsertSetting("userAgentOverride", patch.userAgentOverride.trim());
+  if (patch.stripForwardedHeaders !== undefined) {
+    upsertSetting("stripForwardedHeaders", String(patch.stripForwardedHeaders));
+  }
   return getSettings();
 }
 

@@ -2,6 +2,19 @@ import { OAUTH_BETA_HEADER } from "./constants";
 
 export const DEVICE_ID_HEADER = "x-device-id";
 
+/** Headers that reveal the client's IP or proxy chain to upstream. */
+export const FORWARDED_HEADERS = [
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-forwarded-port",
+  "x-real-ip",
+  "true-client-ip",
+  "cf-connecting-ip",
+  "via",
+] as const;
+
 /**
  * Rewrite client request headers for forwarding to Anthropic with our OAuth token.
  * Mirrors better-ccflare's AnthropicProvider.prepareHeaders.
@@ -17,12 +30,17 @@ export function prepareRequestHeaders(
   accessToken: string,
   deviceIdOverride?: string | null,
   userAgentOverride?: string | null,
+  stripForwardedHeaders = false,
 ): Headers {
   const h = new Headers(incoming);
 
   // Strip client credentials — we inject our own.
   h.delete("authorization");
   h.delete("x-api-key");
+
+  if (stripForwardedHeaders) {
+    for (const header of FORWARDED_HEADERS) h.delete(header);
+  }
 
   h.set("authorization", `Bearer ${accessToken}`);
   if (deviceIdOverride && incoming.has(DEVICE_ID_HEADER)) {

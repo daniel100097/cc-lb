@@ -6,6 +6,7 @@ import {
   deleteAccountConfigDir,
   readCredentialsFile,
 } from "../anthropic/account-config";
+import { installedClaudeUserAgent } from "../anthropic/claude-version";
 import { probeAccount, probeTmuxSessionName } from "../anthropic/account-probe";
 import { killTmuxSession } from "../anthropic/tmux-driver";
 import type { UsageWindow } from "../anthropic/usage-panel";
@@ -76,6 +77,7 @@ const settingsPatchSchema = z
     overloadRetryMax: z.number().int().min(0).max(10).optional(),
     newSessionUsageCutoffPercent: z.number().int().min(1).max(100).optional(),
     userAgentOverride: z.string().trim().max(300).optional(),
+    stripForwardedHeaders: z.boolean().optional(),
   })
   .strict();
 
@@ -248,6 +250,7 @@ export const appRouter = router({
   settings: router({
     get: publicProcedure.query(() => getSettings()),
     update: publicProcedure.input(settingsPatchSchema).mutation(({ input }) => patchSettings(input)),
+    installedUserAgent: publicProcedure.query(() => ({ userAgent: installedClaudeUserAgent() })),
   }),
 
   apiKeys: router({
