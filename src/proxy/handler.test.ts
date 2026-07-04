@@ -711,6 +711,55 @@ describe("handleProxy", () => {
     }
   });
 
+  test("patches account_uuid by key presence regardless of the current value", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "Account uuid key presence" });
+    seedAccountCredentials(account.id, {
+      accessToken: "uuid-key-access",
+      refreshToken: "uuid-key-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    writeAccountClaudeJson(account.id, {
+      hasCompletedOnboarding: true,
+      accountUuid: "a960e8fc-95ac-4afc-8c38-ed0d8422cf31",
+    });
+
+    const userId = JSON.stringify({ account_uuid: "", session_id: "sess-key-presence" });
+    const { bodies: outboundBodies, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-account-uuid-key-presence",
+            messages: [],
+            account_uuid: null,
+            metadata: { user_id: userId },
+            nested: { accountUuid: 42 },
+          }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      const sent = decodeBody(outboundBodies[0]);
+      const sentUserId = JSON.parse(sent.metadata.user_id);
+      expect(sent.account_uuid).toBe("a960e8fc-95ac-4afc-8c38-ed0d8422cf31");
+      expect(sent.nested.accountUuid).toBe("a960e8fc-95ac-4afc-8c38-ed0d8422cf31");
+      expect(sentUserId.account_uuid).toBe("a960e8fc-95ac-4afc-8c38-ed0d8422cf31");
+      expect(sentUserId.session_id).toBe("sess-key-presence");
+    } finally {
+      restore();
+    }
+  });
+
   test("rewrites device_id inside the user_id envelope only when the account has an override", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {

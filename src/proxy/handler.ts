@@ -475,9 +475,9 @@ function isDeviceIdEntry(key: string, value: unknown): boolean {
   return typeof value === "number" || typeof value === "boolean";
 }
 
-/** An account-uuid slot is an accountuuid-ish key holding a string; empty strings count so we can fill them. */
-function isAccountUuidEntry(key: string, value: unknown): boolean {
-  return normalizeIdentityKey(key) === "accountuuid" && typeof value === "string";
+/** An account-uuid slot is any accountuuid-ish key; the current value can be empty or the wrong type. */
+function isAccountUuidEntry(key: string, _value: unknown): boolean {
+  return normalizeIdentityKey(key) === "accountuuid";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
