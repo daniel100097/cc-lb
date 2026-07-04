@@ -82,6 +82,8 @@ export const requestLog = sqliteTable(
     costUsd: real("cost_usd"),
     rawRequestHeaders: text("raw_request_headers"),
     rawRequestBody: text("raw_request_body"),
+    rawUpstreamRequestHeaders: text("raw_upstream_request_headers"),
+    rawUpstreamRequestBody: text("raw_upstream_request_body"),
     rawResponseHeaders: text("raw_response_headers"),
     rawResponseBody: text("raw_response_body"),
   },

@@ -42,6 +42,7 @@ describe("handleProxy", () => {
     expect(logs.total).toBe(1);
     expect(logs.entries[0]?.path).toBe("/api/event_logging/batch");
     expect(logs.entries[0]?.raw_request_headers).toBeNull();
+    expect(logs.entries[0]?.raw_upstream_request_headers).toBeNull();
     expect(logs.entries[0]?.raw_response_body).toBeNull();
   });
 
@@ -310,7 +311,11 @@ describe("handleProxy", () => {
         new Request("http://cc-lb.test/v1/messages?beta=1", {
           method: "POST",
           headers: { "content-type": "application/json", authorization: "Bearer client-key" },
-          body: JSON.stringify({ model: "claude-raw-http", messages: [{ role: "user", content: "raw body marker" }] }),
+          body: JSON.stringify({
+            model: "claude-raw-http",
+            messages: [{ role: "user", content: "raw body marker" }],
+            account_uuid: "",
+          }),
         }),
         new URL("http://cc-lb.test/v1/messages?beta=1"),
       );
@@ -322,6 +327,15 @@ describe("handleProxy", () => {
       expect(logs.total).toBe(1);
       expect(logs.entries[0]?.raw_request_headers).toContain("\"authorization\": \"Bearer client-key\"");
       expect(logs.entries[0]?.raw_request_body).toContain("raw body marker");
+      const upstreamHead = logs.entries[0]?.raw_upstream_request_headers ?? "";
+      expect(upstreamHead).toContain("https://api.anthropic.com/v1/messages?beta=1");
+      expect(upstreamHead).toContain("\"authorization\": \"Bearer [redacted]\"");
+      expect(upstreamHead).not.toContain("raw-access");
+      expect(upstreamHead).toContain("oauth-2025-04-20");
+      // Upstream body is the per-attempt patched body, not the client original.
+      expect(logs.entries[0]?.raw_upstream_request_body).toContain("raw body marker");
+      expect(logs.entries[0]?.raw_upstream_request_body).toContain(account.id);
+      expect(logs.entries[0]?.raw_request_body).not.toContain(account.id);
       expect(logs.entries[0]?.raw_response_headers).toContain("\"x-upstream-debug\": \"seen\"");
       expect(logs.entries[0]?.raw_response_body).toContain("response body marker");
     } finally {

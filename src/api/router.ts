@@ -521,6 +521,8 @@ function toPublicRequestLogEntry(entry: RequestLogEntry) {
     costUsd: entry.cost_usd,
     rawRequestHeaders: entry.raw_request_headers,
     rawRequestBody: entry.raw_request_body,
+    rawUpstreamRequestHeaders: entry.raw_upstream_request_headers,
+    rawUpstreamRequestBody: entry.raw_upstream_request_body,
     rawResponseHeaders: entry.raw_response_headers,
     rawResponseBody: entry.raw_response_body,
   };

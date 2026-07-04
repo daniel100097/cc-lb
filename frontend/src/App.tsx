@@ -1720,7 +1720,14 @@ function RequestsTable({
 }
 
 function RequestDetails({ entry }: { entry: RequestEntry }) {
-  const hasRawHttp = Boolean(entry.rawRequestHeaders || entry.rawRequestBody || entry.rawResponseHeaders || entry.rawResponseBody);
+  const hasRawHttp = Boolean(
+    entry.rawRequestHeaders ||
+      entry.rawRequestBody ||
+      entry.rawUpstreamRequestHeaders ||
+      entry.rawUpstreamRequestBody ||
+      entry.rawResponseHeaders ||
+      entry.rawResponseBody,
+  );
   return (
     <div className="grid gap-3">
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -1734,9 +1741,14 @@ function RequestDetails({ entry }: { entry: RequestEntry }) {
         {entry.error ? <DetailItem className="sm:col-span-2 xl:col-span-4" label="Error" value={entry.error} /> : null}
       </div>
       {hasRawHttp ? (
-        <div className="grid gap-3 lg:grid-cols-2">
-          <RawHttpPanel title="Request" headers={entry.rawRequestHeaders} body={entry.rawRequestBody} />
-          <RawHttpPanel title="Response" headers={entry.rawResponseHeaders} body={entry.rawResponseBody} />
+        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+          <RawHttpPanel title="Request to gateway" headers={entry.rawRequestHeaders} body={entry.rawRequestBody} />
+          <RawHttpPanel
+            title="Request to Anthropic"
+            headers={entry.rawUpstreamRequestHeaders}
+            body={entry.rawUpstreamRequestBody}
+          />
+          <RawHttpPanel title="Response from Anthropic" headers={entry.rawResponseHeaders} body={entry.rawResponseBody} />
         </div>
       ) : null}
     </div>

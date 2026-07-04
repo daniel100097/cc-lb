@@ -49,6 +49,8 @@ describe("request log repository", () => {
       latencyMs: 12,
       rawRequestHeaders: "{\"method\":\"POST\"}",
       rawRequestBody: "{\"model\":\"claude-sonnet-4\"}",
+      rawUpstreamRequestHeaders: "{\"authorization\":\"Bearer [redacted]\"}",
+      rawUpstreamRequestBody: "{\"model\":\"claude-sonnet-4\",\"account_uuid\":\"patched\"}",
     });
     logRequest({
       accountId: null,
@@ -80,6 +82,8 @@ describe("request log repository", () => {
     expect(page.entries[0]?.failover_attempt).toBe(1);
     expect(page.entries[0]?.upstream_request_id).toBe("req_123");
     expect(page.entries[0]?.raw_request_body).toContain("claude-sonnet-4");
+    expect(page.entries[0]?.raw_upstream_request_headers).toContain("Bearer [redacted]");
+    expect(page.entries[0]?.raw_upstream_request_body).toContain("patched");
     expect(page.entries[0]?.raw_response_body).toContain("ok");
 
     const searched = listRequests({ limit: 10, offset: 0, search: "db-request-log-unique" });

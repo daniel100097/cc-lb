@@ -24,6 +24,8 @@ export interface RequestLogInput {
   costUsd?: number | null;
   rawRequestHeaders?: string | null;
   rawRequestBody?: string | null;
+  rawUpstreamRequestHeaders?: string | null;
+  rawUpstreamRequestBody?: string | null;
   rawResponseHeaders?: string | null;
   rawResponseBody?: string | null;
 }
@@ -82,6 +84,8 @@ export interface RequestLogEntry {
   cost_usd: number | null;
   raw_request_headers: string | null;
   raw_request_body: string | null;
+  raw_upstream_request_headers: string | null;
+  raw_upstream_request_body: string | null;
   raw_response_headers: string | null;
   raw_response_body: string | null;
 }
@@ -127,6 +131,8 @@ export function logRequest(input: RequestLogInput): number {
       costUsd: input.costUsd ?? null,
       rawRequestHeaders: input.rawRequestHeaders ?? null,
       rawRequestBody: input.rawRequestBody ?? null,
+      rawUpstreamRequestHeaders: input.rawUpstreamRequestHeaders ?? null,
+      rawUpstreamRequestBody: input.rawUpstreamRequestBody ?? null,
       rawResponseHeaders: input.rawResponseHeaders ?? null,
       rawResponseBody: input.rawResponseBody ?? null,
     })
@@ -289,6 +295,8 @@ function requestSelectFields() {
     costUsd: requestLog.costUsd,
     rawRequestHeaders: requestLog.rawRequestHeaders,
     rawRequestBody: requestLog.rawRequestBody,
+    rawUpstreamRequestHeaders: requestLog.rawUpstreamRequestHeaders,
+    rawUpstreamRequestBody: requestLog.rawUpstreamRequestBody,
     rawResponseHeaders: requestLog.rawResponseHeaders,
     rawResponseBody: requestLog.rawResponseBody,
   };
@@ -319,6 +327,8 @@ function toRequestLogEntry(row: RequestRow): RequestLogEntry {
     cost_usd: row.costUsd,
     raw_request_headers: row.rawRequestHeaders,
     raw_request_body: row.rawRequestBody,
+    raw_upstream_request_headers: row.rawUpstreamRequestHeaders,
+    raw_upstream_request_body: row.rawUpstreamRequestBody,
     raw_response_headers: row.rawResponseHeaders,
     raw_response_body: row.rawResponseBody,
   };
@@ -348,6 +358,8 @@ interface RequestRow {
   costUsd: number | null;
   rawRequestHeaders: string | null;
   rawRequestBody: string | null;
+  rawUpstreamRequestHeaders: string | null;
+  rawUpstreamRequestBody: string | null;
   rawResponseHeaders: string | null;
   rawResponseBody: string | null;
 }
