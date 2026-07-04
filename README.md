@@ -50,6 +50,25 @@ export ANTHROPIC_AUTH_TOKEN=anything
 When API-key auth is enabled in Settings, use a dashboard-generated key as
 `ANTHROPIC_AUTH_TOKEN` instead.
 
+## Docker Compose Example
+
+```yaml
+services:
+  cc-lb:
+    image: ghcr.io/daniel100097/cc-lb:latest
+    ports:
+      - "8484:8484"
+    volumes:
+      - ./data:/app/data
+    environment:
+      PORT: "8484"
+      DB_PATH: /app/data/cc-lb.db
+      CLAUDE_CONFIG_DIR: /app/data/claude
+      CLAUDE_ACCOUNTS_DIR: /app/data/claude-accounts
+      # DASHBOARD_PASSWORD: changeme
+    restart: unless-stopped
+```
+
 ## Local Development
 
 Prerequisites:
