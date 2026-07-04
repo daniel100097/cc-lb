@@ -13,6 +13,7 @@ process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 const { createAccount, getAccount, listAccounts, updateAccount } = await import("../db/accounts");
 const { DEVICE_ID_HEADER } = await import("../anthropic/headers");
 const { listRequests } = await import("../db/request-log");
+const { patchSettings } = await import("../db/settings");
 const { getSticky, setSticky } = await import("../db/sticky");
 const { handleProxy } = await import("./handler");
 const { seedAccountCredentials } = await import("../testing/seed-credentials");
@@ -40,6 +41,8 @@ describe("handleProxy", () => {
     const logs = listRequests({ limit: 10, offset: 0, outcome: "telemetry" });
     expect(logs.total).toBe(1);
     expect(logs.entries[0]?.path).toBe("/api/event_logging/batch");
+    expect(logs.entries[0]?.raw_request_headers).toBeNull();
+    expect(logs.entries[0]?.raw_response_body).toBeNull();
   });
 
   test("fallback success does not overwrite unavailable sticky home", async () => {
@@ -103,6 +106,51 @@ describe("handleProxy", () => {
       expect(logs.entries[0]?.cost_usd).toBe(0.004);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("captures raw HTTP request and response only when enabled", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "Raw HTTP capture" });
+    seedAccountCredentials(account.id, {
+      accessToken: "raw-access",
+      refreshToken: "raw-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    patchSettings({ rawHttpLoggingEnabled: true });
+
+    const { restore } = captureFetch(() =>
+      Response.json(
+        { usage: { input_tokens: 3, output_tokens: 5 }, raw: "response body marker" },
+        { headers: { "content-type": "application/json", "x-upstream-debug": "seen" } },
+      ),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages?beta=1", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Bearer client-key" },
+          body: JSON.stringify({ model: "claude-raw-http", messages: [{ role: "user", content: "raw body marker" }] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages?beta=1"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const logs = listRequests({ limit: 10, offset: 0, search: "claude-raw-http" });
+      expect(logs.total).toBe(1);
+      expect(logs.entries[0]?.raw_request_headers).toContain("\"authorization\": \"Bearer client-key\"");
+      expect(logs.entries[0]?.raw_request_body).toContain("raw body marker");
+      expect(logs.entries[0]?.raw_response_headers).toContain("\"x-upstream-debug\": \"seen\"");
+      expect(logs.entries[0]?.raw_response_body).toContain("response body marker");
+    } finally {
+      patchSettings({ rawHttpLoggingEnabled: false });
+      restore();
     }
   });
 

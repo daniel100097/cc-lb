@@ -133,6 +133,8 @@ describe("appRouter requests", () => {
       method: "POST",
       path: "/v1/messages",
       latencyMs: 9,
+      rawRequestHeaders: "{\"method\":\"POST\"}",
+      rawRequestBody: "{\"model\":\"claude-router-unique\"}",
     });
     updateRequestLogUsage(id, {
       inputTokens: 11,
@@ -140,6 +142,8 @@ describe("appRouter requests", () => {
       costUsd: 0.002,
       upstreamRequestId: "req_router",
       totalMs: 17,
+      rawResponseHeaders: "{\"status\":200}",
+      rawResponseBody: "{\"usage\":{\"input_tokens\":11}}",
     });
     logRequest({
       accountId: null,
@@ -171,11 +175,23 @@ describe("appRouter requests", () => {
       outputTokens: 13,
       costUsd: 0.002,
       upstreamRequestId: "req_router",
+      rawRequestBody: "{\"model\":\"claude-router-unique\"}",
+      rawResponseBody: "{\"usage\":{\"input_tokens\":11}}",
     });
 
     const options = await caller.requests.options();
     expect(options.accounts).toContainEqual({ id: account.id, name: "Request owner" });
     expect(options.models).toContain("claude-router-unique");
     expect(options.outcomes).toContain("network_error");
+  });
+});
+
+describe("appRouter settings", () => {
+  test("updates raw HTTP logging setting", async () => {
+    const updated = await caller.settings.update({ rawHttpLoggingEnabled: true });
+    expect(updated.rawHttpLoggingEnabled).toBe(true);
+    const settings = await caller.settings.get();
+    expect(settings.rawHttpLoggingEnabled).toBe(true);
+    await caller.settings.update({ rawHttpLoggingEnabled: false });
   });
 });

@@ -14,13 +14,21 @@ import { deriveStickyKey } from "./sticky-key";
 import { extractUsageFromBody } from "./usage";
 
 const PROXY_TIMEOUT_MS = 30 * 60 * 1000;
+const RAW_HTTP_BODY_LIMIT_BYTES = 1024 * 1024;
 
 // Telemetry endpoints Claude Code hits that we answer locally.
 const TELEMETRY_PATHS = new Set(["/api/event_logging/batch", "/api/system/package-manager"]);
 
 export async function handleProxy(req: Request, url: URL): Promise<Response> {
   const path = url.pathname;
+  const settings = getSettings();
   if (TELEMETRY_PATHS.has(path)) {
+    const bodyBuf = settings.rawHttpLoggingEnabled && req.method !== "GET" && req.method !== "HEAD"
+      ? await req.arrayBuffer()
+      : null;
+    const rawRequest = settings.rawHttpLoggingEnabled ? rawRequestSnapshot(req, url, bodyBuf) : null;
+    const responseBody = JSON.stringify({ success: true });
+    const responseHeaders = new Headers({ "content-type": "application/json" });
     logRequest({
       accountId: null,
       ts: Date.now(),
@@ -29,17 +37,26 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       outcome: "telemetry",
       method: req.method,
       path,
+      ...rawRequestFields(rawRequest),
+      ...rawResponseFields(
+        settings.rawHttpLoggingEnabled
+          ? {
+              headers: serializeResponseHead(200, "", responseHeaders),
+              body: responseBody,
+            }
+          : null,
+      ),
     });
-    return Response.json({ success: true });
+    return new Response(responseBody, { status: 200, headers: responseHeaders });
   }
 
-  const settings = getSettings();
   const now = Date.now();
   const proxyAuth = authenticateProxyRequest(req, settings, now);
   if (proxyAuth.response) return proxyAuth.response;
 
   // Buffer body once so it can be replayed across failover attempts.
   const bodyBuf = req.method === "GET" || req.method === "HEAD" ? null : await req.arrayBuffer();
+  const rawRequest = settings.rawHttpLoggingEnabled ? rawRequestSnapshot(req, url, bodyBuf) : null;
   let parsedBody: unknown = null;
   if (bodyBuf && bodyBuf.byteLength > 0) {
     try {
@@ -78,6 +95,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       failoverAttempt,
       parsedBody,
       bodySignals,
+      rawRequest,
     });
     if (res === null) {
       failoverAttempt += 1;
@@ -129,6 +147,7 @@ async function attempt(
       failoverAttempt: context.failoverAttempt,
       totalMs: elapsedMs(attemptStartedAt),
       error: errorMessage(error),
+      ...rawRequestFields(context.rawRequest),
     });
     return null;
   }
@@ -179,11 +198,13 @@ async function attempt(
       failoverAttempt: context.failoverAttempt,
       totalMs: elapsedMs(attemptStartedAt),
       error: errorMessage(error),
+      ...rawRequestFields(context.rawRequest),
     });
     return null;
   }
 
   if (upstream.status === 401) {
+    const rawResponse = await rawResponseSnapshot(upstream, context.rawRequest !== null);
     updateAccount(account.id, { needs_reauth: 1 });
     account.needs_reauth = 1;
     logRequest({
@@ -199,12 +220,15 @@ async function attempt(
       latencyMs,
       totalMs: elapsedMs(attemptStartedAt),
       upstreamRequestId: upstream.headers.get("request-id"),
+      ...rawRequestFields(context.rawRequest),
+      ...rawResponseFields(rawResponse),
     });
-    await discardBody(upstream);
+    if (!rawResponse) await discardBody(upstream);
     return null;
   }
 
   if (info.isRateLimited) {
+    const rawResponse = await rawResponseSnapshot(upstream, context.rawRequest !== null);
     if (info.outOfCredits) {
       // Model/beta-scoped credit exhaustion — other models on this account still
       // work, so fail over without benching the account.
@@ -222,8 +246,10 @@ async function attempt(
         totalMs: elapsedMs(attemptStartedAt),
         upstreamRequestId: upstream.headers.get("request-id"),
         error: "out_of_credits",
+        ...rawRequestFields(context.rawRequest),
+        ...rawResponseFields(rawResponse),
       });
-      await discardBody(upstream);
+      if (!rawResponse) await discardBody(upstream);
       return null;
     }
     applyCooldown(account, info, settings, Date.now());
@@ -241,13 +267,16 @@ async function attempt(
       totalMs: elapsedMs(attemptStartedAt),
       upstreamRequestId: upstream.headers.get("request-id"),
       error: info.status,
+      ...rawRequestFields(context.rawRequest),
+      ...rawResponseFields(rawResponse),
     });
-    await discardBody(upstream);
+    if (!rawResponse) await discardBody(upstream);
     return null;
   }
 
   // Success.
   clearRateLimit(account, Date.now());
+  const responseHeaders = sanitizeResponseHeaders(upstream.headers);
   const logId = logRequest({
     accountId: account.id,
     apiKeyId: context.apiKeyId,
@@ -261,9 +290,14 @@ async function attempt(
     latencyMs,
     upstreamRequestId: upstream.headers.get("request-id"),
     costUsd: billingCostUsd(upstream.headers),
+    ...rawRequestFields(context.rawRequest),
+    ...rawResponseFields(
+      context.rawRequest
+        ? { headers: serializeResponseHead(upstream.status, upstream.statusText, responseHeaders), body: null }
+        : null,
+    ),
   });
 
-  const responseHeaders = sanitizeResponseHeaders(upstream.headers);
   if (!upstream.body) {
     updateRequestLogUsage(logId, { totalMs: elapsedMs(attemptStartedAt) });
     return new Response(null, {
@@ -273,7 +307,8 @@ async function attempt(
     });
   }
 
-  const [clientBody, usageBody] = upstream.body.tee();
+  const [clientBody, inspectionBody] = upstream.body.tee();
+  const [usageBody, rawBody] = context.rawRequest ? inspectionBody.tee() : [inspectionBody, null];
   captureUsageInBackground({
     account,
     settings,
@@ -284,6 +319,13 @@ async function attempt(
     model: context.model,
     startedAt: attemptStartedAt,
   });
+  if (rawBody) {
+    captureRawResponseInBackground({
+      logId,
+      body: rawBody,
+      contentType: responseHeaders.get("content-type"),
+    });
+  }
 
   return new Response(clientBody, {
     status: upstream.status,
@@ -355,6 +397,17 @@ interface AttemptContext {
   failoverAttempt: number;
   parsedBody: unknown;
   bodySignals: BodyIdentitySignals;
+  rawRequest: RawRequestSnapshot | null;
+}
+
+interface RawRequestSnapshot {
+  headers: string;
+  body: string | null;
+}
+
+interface RawResponseSnapshot {
+  headers: string;
+  body: string | null;
 }
 
 interface BodyIdentitySignals {
@@ -535,6 +588,154 @@ function captureUsageInBackground(input: UsageCaptureInput): void {
       });
     }
   })();
+}
+
+interface RawResponseCaptureInput {
+  logId: number;
+  body: ReadableStream<Uint8Array>;
+  contentType: string | null;
+}
+
+function captureRawResponseInBackground(input: RawResponseCaptureInput): void {
+  void (async () => {
+    try {
+      updateRequestLogUsage(input.logId, {
+        rawResponseBody: await streamToRawBody(input.body, input.contentType),
+      });
+    } catch (error) {
+      updateRequestLogUsage(input.logId, {
+        rawResponseBody: `[raw response capture failed: ${errorMessage(error)}]`,
+      });
+    }
+  })();
+}
+
+function rawRequestSnapshot(req: Request, url: URL, bodyBuf: ArrayBuffer | null): RawRequestSnapshot {
+  return {
+    headers: serializeRequestHead(req, url),
+    body: bodyBuf ? bufferToRawBody(bodyBuf, req.headers.get("content-type")) : null,
+  };
+}
+
+async function rawResponseSnapshot(response: Response, enabled: boolean): Promise<RawResponseSnapshot | null> {
+  if (!enabled) return null;
+  const headers = serializeResponseHead(response.status, response.statusText, sanitizeResponseHeaders(response.headers));
+  const body = response.body ? bufferToRawBody(await response.arrayBuffer(), response.headers.get("content-type")) : null;
+  return { headers, body };
+}
+
+function rawRequestFields(snapshot: RawRequestSnapshot | null) {
+  return snapshot
+    ? {
+        rawRequestHeaders: snapshot.headers,
+        rawRequestBody: snapshot.body,
+      }
+    : {};
+}
+
+function rawResponseFields(snapshot: RawResponseSnapshot | null) {
+  return snapshot
+    ? {
+        rawResponseHeaders: snapshot.headers,
+        rawResponseBody: snapshot.body,
+      }
+    : {};
+}
+
+function serializeRequestHead(req: Request, url: URL): string {
+  return JSON.stringify(
+    {
+      method: req.method,
+      path: `${url.pathname}${url.search}`,
+      headers: headersObject(req.headers),
+    },
+    null,
+    2,
+  );
+}
+
+function serializeResponseHead(status: number, statusText: string, headers: Headers): string {
+  return JSON.stringify(
+    {
+      status,
+      statusText,
+      headers: headersObject(headers),
+    },
+    null,
+    2,
+  );
+}
+
+function headersObject(headers: Headers): Record<string, string> {
+  const result: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    result[key] = value;
+  });
+  return result;
+}
+
+async function streamToRawBody(stream: ReadableStream<Uint8Array>, contentType: string | null): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const remaining = RAW_HTTP_BODY_LIMIT_BYTES - total;
+      if (remaining > 0) {
+        const chunk = value.byteLength > remaining ? value.slice(0, remaining) : value;
+        chunks.push(chunk);
+        total += chunk.byteLength;
+      }
+      if (value.byteLength > remaining) truncated = true;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = concatChunks(chunks, total);
+  const body = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(body).set(bytes);
+  return decodeRawBody(body, contentType, truncated);
+}
+
+function bufferToRawBody(body: ArrayBuffer, contentType: string | null): string {
+  const truncated = body.byteLength > RAW_HTTP_BODY_LIMIT_BYTES;
+  const slice = truncated ? body.slice(0, RAW_HTTP_BODY_LIMIT_BYTES) : body;
+  return decodeRawBody(slice, contentType, truncated);
+}
+
+function decodeRawBody(body: ArrayBuffer, contentType: string | null, truncated: boolean): string {
+  if (!isTextBody(contentType)) {
+    return `[binary body omitted: ${body.byteLength}${truncated ? "+" : ""} bytes captured limit ${RAW_HTTP_BODY_LIMIT_BYTES}]`;
+  }
+  const text = new TextDecoder().decode(body);
+  return truncated ? `${text}\n[truncated at ${RAW_HTTP_BODY_LIMIT_BYTES} bytes]` : text;
+}
+
+function isTextBody(contentType: string | null): boolean {
+  if (!contentType) return true;
+  const value = contentType.toLowerCase();
+  return (
+    value.startsWith("text/") ||
+    value.includes("json") ||
+    value.includes("xml") ||
+    value.includes("javascript") ||
+    value.includes("x-www-form-urlencoded") ||
+    value.includes("event-stream")
+  );
+}
+
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 function modelFromBody(body: unknown): string | null {

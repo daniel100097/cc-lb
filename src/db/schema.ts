@@ -80,6 +80,10 @@ export const requestLog = sqliteTable(
     cacheReadTokens: integer("cache_read_tokens"),
     cacheCreationTokens: integer("cache_creation_tokens"),
     costUsd: real("cost_usd"),
+    rawRequestHeaders: text("raw_request_headers"),
+    rawRequestBody: text("raw_request_body"),
+    rawResponseHeaders: text("raw_response_headers"),
+    rawResponseBody: text("raw_response_body"),
   },
   (table) => [
     index("idx_request_log_ts").on(table.ts),

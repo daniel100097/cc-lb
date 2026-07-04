@@ -1,104 +1,168 @@
 # cc-lb
 
-Load balancer / proxy for Claude Code accounts. Pool multiple Anthropic OAuth
-(Pro/Max) accounts behind one endpoint, balance requests across them, manage it
-all from a web dashboard.
+Local load balancer and dashboard for Claude Code OAuth accounts.
 
-Point Claude Code at it:
+cc-lb gives Claude Code one local Anthropic-compatible endpoint while routing
+requests across a pool of Claude Code accounts. It handles account login,
+token refresh, rate-limit failover, sticky sessions, API keys, request logs, and
+basic usage analytics.
 
-```sh
-ANTHROPIC_BASE_URL=http://localhost:8484
-```
+This project is intended for private/local deployments. The `data/` directory
+contains plaintext Claude Code credentials and should be treated as a secret
+store.
 
-- **Account/proxy logic** modeled on [better-ccflare](https://github.com/tombii/better-ccflare).
-- **Load-balancing strategies + design language** modeled on [codex-lb](https://github.com/Soju06/codex-lb).
+## Features
 
-## Status
+- `/v1/*` proxy endpoint for Claude Code and Anthropic SDK traffic.
+- Web dashboard for accounts, routing settings, API keys, sticky sessions, and
+  request logs.
+- Account onboarding through the normal `claude` CLI login flow.
+- Token refresh and usage probes driven by `claude` in `tmux`.
+- Automatic failover on expired tokens, unauthorized accounts, network errors,
+  overloaded responses, and rate limits.
+- Routing strategies: `priority`, `round_robin`, `least_used`,
+  `weighted_random`, and `session_reset_drain`.
+- Optional proxy API-key enforcement with account scoping and model filters.
+- Optional dashboard password for the SPA and tRPC API.
+- SQLite persistence with Bun, React, Tailwind, and Docker support.
 
-Bun server, SQLite persistence, account/token APIs, Anthropic proxy failover, tRPC
-dashboard, Docker, and CI are implemented. See [`plans/`](plans/) and
-[`docs/research/`](docs/research/) for the design notes behind the implementation.
+## Quick Start
 
-## Add Accounts
-
-Accounts are added through the **Claude Code CLI login** only: cc-lb runs the
-normal `claude` TUI in tmux, shows the login link, sends your pasted Claude code
-back to the CLI, and adopts the generated `.credentials.json` into a persistent
-per-account config dir under `./data/claude-accounts/<accountId>/`.
-
-With Docker, the image includes the `claude` CLI and the dashboard drives this
-flow from the **Add Account** dialog.
-
-## Token refresh & usage (Claude CLI)
-
-Claude Code owns each account's tokens. The `.credentials.json` in that account's
-config dir is the **sole source of truth** — cc-lb reads it and never writes it.
-When a request selects an account whose access token is expired (or inside the
-30-minute safety window), cc-lb boots `claude` in tmux against that account's
-config dir and runs `/usage`. That authenticated call makes the CLI refresh its
-own token; cc-lb then re-reads the file. The `/usage` panel is parsed for 5-hour
-and weekly utilization and shown per account on the dashboard, where a manual
-**Refresh token & usage** button triggers the same probe on demand.
-
-Probes are deduped per account (one in-flight at a time), globally capped, and
-backed off on failure — no background polling. Requirements at runtime: `tmux`
-and the `claude` CLI (both in the Docker image). Debug a live probe with
-`tmux -S /tmp/cc-lb-claude-code.tmux attach -t cc-lb-probe-<hex>`. If the refresh
-token is dead, the probe reaches the CLI login screen and the account is flagged
-`needs_reauth`; re-add it through the login dialog.
-
-Each request carries the routed account's **own Claude identity** — the
-`machineID` (device id) and `accountUuid` (account id) from that account's
-`.claude.json` — so upstream sees a device and account fingerprint consistent
-with the account whose token is used, matching a native Claude Code call. The
-manual device ID override is the fallback when the folder has no `machineID`;
-`account_uuid` falls back to cc-lb's internal account id. Either way it is
-location-scoped: an incoming `x-device-id` header is rewritten, and device-id /
-account-uuid fields inside the JSON body are rewritten — each only when the
-client sent one there. cc-lb never adds an identity signal to a location that
-lacked one.
-
-## Run (dev)
-
-```sh
-bun install
-bun run build                # builds React dashboard into public/
-bun run dev                  # server on :8484
-```
-
-The dashboard is built with Bun and Tailwind CLI from `frontend/` source files;
-there is no Vite project or nested frontend package.
-
-## Run (Docker)
+Run with Docker:
 
 ```sh
 docker compose up
 ```
 
-The image is published to `ghcr.io/daniel100097/cc-lb` by GitHub Actions on push to main.
+Open the dashboard:
 
-## Environment
+```text
+http://localhost:8484
+```
+
+Add accounts from the dashboard, then point Claude Code at cc-lb:
+
+```sh
+export ANTHROPIC_BASE_URL=http://localhost:8484
+export ANTHROPIC_AUTH_TOKEN=anything
+```
+
+When API-key auth is enabled in Settings, use a dashboard-generated key as
+`ANTHROPIC_AUTH_TOKEN` instead.
+
+## Local Development
+
+Prerequisites:
+
+- Bun
+- `tmux`
+- Claude Code CLI available through this repo's dependencies
+
+Install and run:
+
+```sh
+bun install
+bun run build
+bun run dev
+```
+
+Useful commands:
+
+```sh
+bun run dev:server   # run only the Bun server
+bun run typecheck
+bun run lint
+bun run test
+bun run test:e2e
+```
+
+The React dashboard lives in `frontend/` and builds directly into `public/` with
+Bun and Tailwind CLI. There is no Vite project.
+
+## Accounts
+
+Accounts are added through Claude Code CLI login. The dashboard starts `claude`
+inside `tmux`, shows the Claude login URL, accepts the pasted code, and adopts
+the generated Claude config into:
+
+```text
+data/claude-accounts/<accountId>/
+```
+
+For each account, `.credentials.json` is the source of truth for OAuth tokens.
+cc-lb reads that file but does not write token values itself. When an account
+needs refresh, cc-lb runs `claude` against that account's config directory and
+uses `/usage` to let the CLI refresh its own credentials.
+
+The Docker image includes `tmux` and the Claude Code CLI.
+
+To inspect a live Claude CLI pane:
+
+```sh
+tmux -S /tmp/cc-lb-claude-code.tmux attach -t cc-lb-probe-<hex>
+```
+
+## Routing
+
+Incoming proxy requests go to `/v1/*`. cc-lb selects an available account,
+rewrites the outbound auth header to that account's OAuth token, and forwards
+the request to Anthropic.
+
+The proxy also preserves Claude Code identity signals per account where the
+client already sent them, including `x-device-id`, `device_id`, and
+`account_uuid` fields.
+
+On rate limits, token errors, 401s, 529 overloads, and network failures, cc-lb
+records the outcome and tries the next eligible account. Sticky sessions can pin
+related traffic to the same account for a configurable TTL.
+
+## Configuration
 
 | Variable | Default | Purpose |
-|---|---:|---|
-| `PORT` | `8484` | Bun server port. |
-| `DB_PATH` | `./data/cc-lb.db` | SQLite database location. |
-| `CLAUDE_ACCOUNTS_DIR` | `./data/claude-accounts` | Per-account Claude Code config dirs (each holds the CLI-managed `.credentials.json` token source). |
-| `DASHBOARD_PASSWORD` | unset | When set, protects the SPA and `/api/trpc`; `/v1/*` remains unauthenticated. |
+| --- | --- | --- |
+| `PORT` | `8484` | HTTP server port. |
+| `DB_PATH` | `./data/cc-lb.db` | SQLite database path. |
+| `CLAUDE_CONFIG_DIR` | `./data/claude` | Default Claude config dir for CLI sessions. |
+| `CLAUDE_ACCOUNTS_DIR` | `./data/claude-accounts` | Per-account Claude config directories. |
+| `CLAUDE_CODE_LOGIN_COMMAND` | repo-local `claude` binary | Command run inside `tmux` for login and refresh. |
+| `CLAUDE_CODE_TMUX_SOCKET` | `/tmp/cc-lb-claude-code.tmux` | Dedicated tmux socket path. |
+| `DASHBOARD_PASSWORD` | unset | Protects the dashboard and `/api/trpc` when set. |
+| `ANTHROPIC_API_BASE` | `https://api.anthropic.com` | Upstream Anthropic API base URL. |
+
+Dashboard password auth does not protect `/v1/*`. Use the dashboard's API-key
+setting when the proxy endpoint itself should reject unknown clients.
 
 ## Security
 
-`data/` is the secret store: the SQLite database plus the per-account
-`claude-accounts/<id>/.credentials.json` files that hold **plaintext OAuth
-tokens** (Claude-Code-managed). Protect its file permissions. Do not expose port
-8484 publicly without setting `DASHBOARD_PASSWORD` and/or keeping it on a private
-network. The `/v1/*` proxy path is unauthenticated by default.
+Do not expose cc-lb directly to the public internet. At minimum, set
+`DASHBOARD_PASSWORD`, enable proxy API-key auth, and keep it behind a private
+network or trusted reverse proxy.
 
-## Layout
+Protect `data/`. It contains:
 
+- `cc-lb.db`
+- per-account Claude Code config directories
+- `.credentials.json` files with plaintext OAuth tokens
+- optional debug/compare logs
+
+Raw HTTP logging is useful for debugging but may capture prompts, responses,
+headers, and other sensitive request content.
+
+## Project Layout
+
+```text
+src/                 Bun server, tRPC API, proxy, persistence
+frontend/            React dashboard source
+public/              Built dashboard assets
+tests/e2e/           Playwright smoke tests
+docs/research/       Reference notes and implementation research
+scripts/             Utility scripts
+docker-compose.yml   Local Docker deployment
 ```
-src/        Bun server (proxy + tRPC API)
-frontend/   Bun-built React 19 + Tailwind v4 + shadcn dashboard
-plans/      implementation plan (start at plans/00-overview.md)
-docs/       research on better-ccflare & codex-lb
-```
+
+## Credits
+
+The account/proxy behavior is informed by
+[better-ccflare](https://github.com/tombii/better-ccflare), and the dashboard
+direction and routing ideas are informed by
+[codex-lb](https://github.com/Soju06/codex-lb).

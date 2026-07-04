@@ -69,6 +69,7 @@ const settingsPatchSchema = z
     stickySessions: z.boolean().optional(),
     stickyTtlMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
     apiKeyAuthEnabled: z.boolean().optional(),
+    rawHttpLoggingEnabled: z.boolean().optional(),
     rateLimitBackoffBaseMs: z.number().int().min(1_000).max(60 * 60 * 1000).optional(),
     rateLimitBackoffMaxMs: z.number().int().min(1_000).max(24 * 60 * 60 * 1000).optional(),
     sessionDurationMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
@@ -517,6 +518,10 @@ function toPublicRequestLogEntry(entry: RequestLogEntry) {
     cacheReadTokens: entry.cache_read_tokens,
     cacheCreationTokens: entry.cache_creation_tokens,
     costUsd: entry.cost_usd,
+    rawRequestHeaders: entry.raw_request_headers,
+    rawRequestBody: entry.raw_request_body,
+    rawResponseHeaders: entry.raw_response_headers,
+    rawResponseBody: entry.raw_response_body,
   };
 }
 

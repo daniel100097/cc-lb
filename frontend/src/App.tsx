@@ -1719,16 +1719,56 @@ function RequestsTable({
 }
 
 function RequestDetails({ entry }: { entry: RequestEntry }) {
+  const hasRawHttp = Boolean(entry.rawRequestHeaders || entry.rawRequestBody || entry.rawResponseHeaders || entry.rawResponseBody);
   return (
-    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-      <DetailItem label="Path" value={`${entry.method ?? ""} ${entry.path ?? "-"}`.trim()} />
-      <DetailItem label="Upstream request" value={entry.upstreamRequestId ?? "-"} />
-      <DetailItem label="Total time" value={latencyMs(entry.totalMs)} />
-      <DetailItem
-        label="Cache tokens"
-        value={`read ${compactOptional(entry.cacheReadTokens)} / create ${compactOptional(entry.cacheCreationTokens)}`}
-      />
-      {entry.error ? <DetailItem className="sm:col-span-2 xl:col-span-4" label="Error" value={entry.error} /> : null}
+    <div className="grid gap-3">
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <DetailItem label="Path" value={`${entry.method ?? ""} ${entry.path ?? "-"}`.trim()} />
+        <DetailItem label="Upstream request" value={entry.upstreamRequestId ?? "-"} />
+        <DetailItem label="Total time" value={latencyMs(entry.totalMs)} />
+        <DetailItem
+          label="Cache tokens"
+          value={`read ${compactOptional(entry.cacheReadTokens)} / create ${compactOptional(entry.cacheCreationTokens)}`}
+        />
+        {entry.error ? <DetailItem className="sm:col-span-2 xl:col-span-4" label="Error" value={entry.error} /> : null}
+      </div>
+      {hasRawHttp ? (
+        <div className="grid gap-3 lg:grid-cols-2">
+          <RawHttpPanel title="Request" headers={entry.rawRequestHeaders} body={entry.rawRequestBody} />
+          <RawHttpPanel title="Response" headers={entry.rawResponseHeaders} body={entry.rawResponseBody} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RawHttpPanel({
+  title,
+  headers,
+  body,
+}: {
+  title: string;
+  headers: string | null;
+  body: string | null;
+}) {
+  const value = [`# ${title} headers`, headers ?? "-", "", `# ${title} body`, body ?? "-"].join("\n");
+  return (
+    <div className="grid min-w-0 gap-2 rounded-md border bg-background p-3">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-medium">{title}</h3>
+        <CopyButton value={value} label="Copy raw" />
+      </div>
+      <RawHttpBlock label="Headers" value={headers} />
+      <RawHttpBlock label="Body" value={body} />
+    </div>
+  );
+}
+
+function RawHttpBlock({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="grid min-w-0 gap-1">
+      <div className="text-muted-foreground text-[11px] uppercase">{label}</div>
+      <pre className="max-h-72 overflow-auto rounded-md bg-muted p-2 font-mono text-[11px] whitespace-pre-wrap">{value ?? "-"}</pre>
     </div>
   );
 }
@@ -2117,6 +2157,16 @@ function SettingsForm({
           checked={Boolean(form.apiKeyAuthEnabled)}
           disabled={!settingsSupportsApiKeyAuth(settings)}
           onCheckedChange={(checked) => setForm((current) => ({ ...current, apiKeyAuthEnabled: checked }))}
+        />
+      </label>
+      <label className="flex items-center justify-between rounded-lg border p-3">
+        <span>
+          <span className="block font-medium">Raw HTTP logging</span>
+          <span className="text-muted-foreground text-sm">Store headers and bodies for new proxy attempts. May include API keys, prompts, and tokens.</span>
+        </span>
+        <Switch
+          checked={Boolean(form.rawHttpLoggingEnabled)}
+          onCheckedChange={(checked) => setForm((current) => ({ ...current, rawHttpLoggingEnabled: checked }))}
         />
       </label>
       <SettingNumber label="Sticky TTL" value={form.stickyTtlMs} onChange={(value) => updateNumber("stickyTtlMs", value)} helper={durationMs(form.stickyTtlMs)} />
