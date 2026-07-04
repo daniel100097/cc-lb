@@ -19,6 +19,10 @@ export interface Account {
   rate_limit_status: string | null;
   rate_limit_reset: number | null;
   rate_limit_remaining: number | null;
+  rate_limit_5h_utilization: number | null;
+  rate_limit_5h_reset: number | null;
+  rate_limit_7d_utilization: number | null;
+  rate_limit_7d_reset: number | null;
   rate_limited_until: number | null;
   consecutive_rate_limits: number;
   needs_reauth: number;
@@ -90,6 +94,10 @@ export function updateAccount(id: string, patch: AccountPatch): void {
   add("rateLimitStatus", patch.rate_limit_status);
   add("rateLimitReset", patch.rate_limit_reset);
   add("rateLimitRemaining", patch.rate_limit_remaining);
+  add("rateLimit5hUtilization", patch.rate_limit_5h_utilization);
+  add("rateLimit5hReset", patch.rate_limit_5h_reset);
+  add("rateLimit7dUtilization", patch.rate_limit_7d_utilization);
+  add("rateLimit7dReset", patch.rate_limit_7d_reset);
   add("rateLimitedUntil", patch.rate_limited_until);
   add("consecutiveRateLimits", patch.consecutive_rate_limits);
   add("needsReauth", patch.needs_reauth);
@@ -131,6 +139,10 @@ interface AccountUpdateValues {
   rateLimitStatus?: string | null;
   rateLimitReset?: number | null;
   rateLimitRemaining?: number | null;
+  rateLimit5hUtilization?: number | null;
+  rateLimit5hReset?: number | null;
+  rateLimit7dUtilization?: number | null;
+  rateLimit7dReset?: number | null;
   rateLimitedUntil?: number | null;
   consecutiveRateLimits?: number;
   needsReauth?: number;
@@ -155,6 +167,10 @@ function toAccount(row: AccountRow): Account {
     rate_limit_status: row.rateLimitStatus,
     rate_limit_reset: row.rateLimitReset,
     rate_limit_remaining: row.rateLimitRemaining,
+    rate_limit_5h_utilization: row.rateLimit5hUtilization,
+    rate_limit_5h_reset: row.rateLimit5hReset,
+    rate_limit_7d_utilization: row.rateLimit7dUtilization,
+    rate_limit_7d_reset: row.rateLimit7dReset,
     rate_limited_until: row.rateLimitedUntil,
     consecutive_rate_limits: row.consecutiveRateLimits,
     needs_reauth: row.needsReauth,

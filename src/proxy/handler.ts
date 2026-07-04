@@ -603,7 +603,15 @@ function captureUsageInBackground(input: UsageCaptureInput): void {
       if (streamLimitError) {
         applyCooldown(
           input.account,
-          { isRateLimited: true, status: streamLimitError, resetTime: null, remaining: null, outOfCredits: false },
+          {
+            isRateLimited: true,
+            status: streamLimitError,
+            resetTime: null,
+            remaining: null,
+            fiveHour: { utilization: null, reset: null },
+            sevenDay: { utilization: null, reset: null },
+            outOfCredits: false,
+          },
           input.settings,
           Date.now(),
         );
