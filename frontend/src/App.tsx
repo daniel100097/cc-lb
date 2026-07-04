@@ -1238,7 +1238,7 @@ function AccountSummaryCards({ accounts }: { accounts: Account[] }) {
             <StatusBadge status={account.status} />
           </div>
           <div className="mt-4 grid gap-3">
-            <MiniQuotaBar remaining={account.rateLimitRemaining} />
+            <MiniQuotaBar percentRemaining={quotaRemainingPercent(account)} />
             <div className="grid grid-cols-3 gap-2 text-xs">
               <MiniMetric label="Priority" value={String(account.priority)} />
               <MiniMetric label="Requests" value={compactNumber(account.requestCount)} />
@@ -1327,7 +1327,7 @@ function ApiKeyListItem({ apiKey, selected, onSelect }: { apiKey: ApiKey; select
         <Badge variant={apiKeyIsActive(apiKey) ? "default" : "secondary"}>{labelFromKey(apiKeyStatus(apiKey))}</Badge>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <MiniQuotaBar remaining={null} />
+        <MiniQuotaBar percentRemaining={null} />
         <div className="text-right text-xs text-muted-foreground">{currency(usage.totalCostUsd ?? usage.costUsd ?? 0)}</div>
       </div>
     </button>
@@ -1858,7 +1858,7 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
       <td className="px-2 py-3">{account.priority}</td>
       <td className="px-2 py-3">{compactNumber(account.requestCount)}</td>
       <td className="px-2 py-3">
-        <MiniQuotaBar remaining={account.rateLimitRemaining} />
+        <MiniQuotaBar percentRemaining={quotaRemainingPercent(account)} />
       </td>
       <td className="px-2 py-3">{relativeTime(account.rateLimitReset)}</td>
       <td className="px-2 py-3">
@@ -2347,6 +2347,28 @@ function buildDashboardStats(
 function trendValues<T extends Record<string, unknown>>(rows: T[], key: keyof T, fallback: number): { value: number }[] {
   const values = rows.map((row) => numeric(row[key]));
   return values.length > 0 ? values.map((value) => ({ value })) : [{ value: Math.max(0, fallback) }, { value: Math.max(0, fallback) }];
+}
+
+/**
+ * Percent of the representative (5h) window still available. Prefers the
+ * live rate-limit headers, falls back to the /usage probe session window,
+ * then the legacy remaining count; null renders as "Unknown".
+ */
+function quotaRemainingPercent(account: Account): number | null {
+  const headerUtilization = account.rateLimit5hUtilization;
+  const headerFresh =
+    headerUtilization !== null &&
+    headerUtilization !== undefined &&
+    (account.rateLimit5hReset === null || account.rateLimit5hReset === undefined || account.rateLimit5hReset > Date.now());
+  if (headerFresh) return (1 - headerUtilization) * 100;
+  const sessionUsage = account.usage?.find((entry) => entry.kind === "session");
+  if (sessionUsage?.usedPercent !== null && sessionUsage?.usedPercent !== undefined) {
+    return 100 - sessionUsage.usedPercent;
+  }
+  if (account.rateLimitRemaining !== null && account.rateLimitRemaining !== undefined) {
+    return Math.min(100, account.rateLimitRemaining);
+  }
+  return null;
 }
 
 function buildDashboardDonut(

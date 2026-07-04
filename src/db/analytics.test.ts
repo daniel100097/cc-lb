@@ -24,8 +24,11 @@ describe("analytics repository", () => {
     const account = createAccount({ name: "Analytics A" });
     updateAccount(account.id, {
       rate_limit_status: "ok",
-      rate_limit_remaining: 42,
       rate_limit_reset: now + 60 * 60 * 1000,
+      rate_limit_5h_utilization: 0.25,
+      rate_limit_5h_reset: now + 60 * 60 * 1000,
+      rate_limit_7d_utilization: 0.5,
+      rate_limit_7d_reset: now + 3 * 24 * 60 * 60 * 1000,
     });
     const otherAccount = createAccount({ name: "Analytics B" });
     const apiKey = createApiKey({ name: "Analytics key" }, now).apiKey;
@@ -73,7 +76,9 @@ describe("analytics repository", () => {
     expect(dashboard.overview.costUsd).toBeCloseTo(0.06);
     expect(dashboard.overview.errorCount).toBe(1);
     expect(dashboard.overview.topError).toEqual({ label: "boom", count: 1 });
-    expect(dashboard.creditApproximations.fiveHourRemaining).toBe(42);
+    // (1 - 0.25) * 3000 five-hour credits; (1 - 0.5) * 100800 weekly credits.
+    expect(dashboard.creditApproximations.fiveHourRemaining).toBe(2250);
+    expect(dashboard.creditApproximations.sevenDayRemaining).toBe(50400);
     expect(dashboard.accountSummaries.find((summary) => summary.accountId === account.id)?.requestCount).toBe(2);
 
     const byKey = listApiKeyUsageSummaries(now - 24 * 60 * 60 * 1000, now);

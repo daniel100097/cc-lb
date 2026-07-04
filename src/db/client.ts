@@ -183,6 +183,10 @@ function migrate() {
   ensureColumn("accounts", "device_id_override", "TEXT");
   ensureColumn("accounts", "usage_windows", "TEXT");
   ensureColumn("accounts", "usage_checked_at", "INTEGER");
+  ensureColumn("accounts", "rate_limit_5h_utilization", "REAL");
+  ensureColumn("accounts", "rate_limit_5h_reset", "INTEGER");
+  ensureColumn("accounts", "rate_limit_7d_utilization", "REAL");
+  ensureColumn("accounts", "rate_limit_7d_reset", "INTEGER");
   dropColumn("accounts", "access_token");
   dropColumn("accounts", "refresh_token");
   dropColumn("accounts", "expires_at");

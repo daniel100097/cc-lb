@@ -9,7 +9,7 @@ process.env.DB_PATH = dbPath;
 const accountsDir = `/tmp/cc-lb-ratelimit-accounts-${process.pid}`;
 process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
-const { applyCooldown, MIN_COOLDOWN_FLOOR_MS, parseRateLimit } = await import("./rate-limit");
+const { applyCooldown, MIN_COOLDOWN_FLOOR_MS, parseRateLimit, recordMetadata } = await import("./rate-limit");
 const { createAccount, getAccount, updateAccount } = await import("../db/accounts");
 const { DEFAULT_SETTINGS } = await import("../db/settings");
 const { seedAccountCredentials } = await import("../testing/seed-credentials");
@@ -131,6 +131,52 @@ describe("parseRateLimit", () => {
     );
     expect(info.outOfCredits).toBe(false);
   });
+
+  test("parses per-window utilization headers", () => {
+    // Header shape captured from a live /v1/messages response (2026-07).
+    const info = parseRateLimit(
+      new Response("ok", {
+        status: 200,
+        headers: {
+          "anthropic-ratelimit-unified-status": "allowed",
+          "anthropic-ratelimit-unified-reset": String(Math.floor((now + 3_600_000) / 1000)),
+          "anthropic-ratelimit-unified-5h-status": "allowed",
+          "anthropic-ratelimit-unified-5h-reset": String(Math.floor((now + 3_600_000) / 1000)),
+          "anthropic-ratelimit-unified-5h-utilization": "0.16",
+          "anthropic-ratelimit-unified-7d-status": "allowed",
+          "anthropic-ratelimit-unified-7d-reset": String(Math.floor((now + 6 * 24 * 3_600_000) / 1000)),
+          "anthropic-ratelimit-unified-7d-utilization": "0.11",
+        },
+      }),
+      now,
+    );
+    expect(info.fiveHour.utilization).toBe(0.16);
+    expect(info.fiveHour.reset).toBe(now + 3_600_000);
+    expect(info.sevenDay.utilization).toBe(0.11);
+    expect(info.sevenDay.reset).toBe(now + 6 * 24 * 3_600_000);
+    expect(info.remaining).toBeNull();
+  });
+
+  test("clamps utilization to [0,1] and ignores garbage values", () => {
+    const info = parseRateLimit(
+      new Response("ok", {
+        status: 200,
+        headers: {
+          "anthropic-ratelimit-unified-5h-utilization": "1.7",
+          "anthropic-ratelimit-unified-7d-utilization": "not-a-number",
+        },
+      }),
+      now,
+    );
+    expect(info.fiveHour.utilization).toBe(1);
+    expect(info.sevenDay.utilization).toBeNull();
+  });
+
+  test("reports null windows when the headers are absent", () => {
+    const info = parseRateLimit(new Response("ok", { status: 200 }), now);
+    expect(info.fiveHour).toEqual({ utilization: null, reset: null });
+    expect(info.sevenDay).toEqual({ utilization: null, reset: null });
+  });
 });
 
 describe("applyCooldown", () => {
@@ -154,7 +200,15 @@ describe("applyCooldown", () => {
     return account;
   }
 
-  const baseInfo = { isRateLimited: true, status: "rate_limited", remaining: 0, outOfCredits: false };
+  const noWindow = { utilization: null, reset: null };
+  const baseInfo = {
+    isRateLimited: true,
+    status: "rate_limited",
+    remaining: 0,
+    fiveHour: noWindow,
+    sevenDay: noWindow,
+    outOfCredits: false,
+  };
 
   test("never cools shorter than the upstream reset", () => {
     const account = makeAccount();
@@ -197,5 +251,52 @@ describe("applyCooldown", () => {
     expect(stored?.rate_limit_status).toBe("rate_limited");
     expect(stored?.rate_limit_reset).toBe(now + 600_000);
     expect(stored?.rate_limit_remaining).toBe(0);
+  });
+});
+
+describe("recordMetadata", () => {
+  const noWindow = { utilization: null, reset: null };
+
+  test("persists per-window utilization", () => {
+    const account = createAccount({ name: `Windows ${process.pid}-a` });
+    recordMetadata(account, {
+      isRateLimited: false,
+      status: "allowed",
+      resetTime: now + 3_600_000,
+      remaining: null,
+      fiveHour: { utilization: 0.16, reset: now + 3_600_000 },
+      sevenDay: { utilization: 0.11, reset: now + 6 * 24 * 3_600_000 },
+      outOfCredits: false,
+    });
+    const stored = getAccount(account.id);
+    expect(stored?.rate_limit_5h_utilization).toBe(0.16);
+    expect(stored?.rate_limit_5h_reset).toBe(now + 3_600_000);
+    expect(stored?.rate_limit_7d_utilization).toBe(0.11);
+    expect(stored?.rate_limit_7d_reset).toBe(now + 6 * 24 * 3_600_000);
+  });
+
+  test("keeps prior window data when a response omits the headers", () => {
+    const account = createAccount({ name: `Windows ${process.pid}-b` });
+    recordMetadata(account, {
+      isRateLimited: false,
+      status: "allowed",
+      resetTime: null,
+      remaining: null,
+      fiveHour: { utilization: 0.5, reset: now + 3_600_000 },
+      sevenDay: { utilization: 0.2, reset: now + 6 * 24 * 3_600_000 },
+      outOfCredits: false,
+    });
+    recordMetadata(account, {
+      isRateLimited: false,
+      status: "allowed",
+      resetTime: null,
+      remaining: null,
+      fiveHour: noWindow,
+      sevenDay: noWindow,
+      outOfCredits: false,
+    });
+    const stored = getAccount(account.id);
+    expect(stored?.rate_limit_5h_utilization).toBe(0.5);
+    expect(stored?.rate_limit_7d_utilization).toBe(0.2);
   });
 });
