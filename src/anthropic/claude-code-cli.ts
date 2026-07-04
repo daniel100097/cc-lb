@@ -9,6 +9,7 @@ const SESSION_TTL_MS = 10 * 60 * 1000;
 const MAX_OUTPUT_CHARS = 80_000;
 const DEFAULT_TMUX_SOCKET_PATH = "/tmp/cc-lb-claude-code.tmux";
 const LOGIN_CONFIG_ROOT = "/tmp/cc-lb-claude-logins";
+const PROMPT_RETRY_MS = 1_500;
 const ESC = 27;
 const BEL = 7;
 
@@ -34,10 +35,10 @@ interface LoginSession {
   waiters: Waiter[];
   pollTimer: Timer | null;
   refreshing: boolean;
-  sentThemeEnter: boolean;
-  sentLoginEnter: boolean;
-  sentSecurityEnter: boolean;
-  sentTrustEnter: boolean;
+  themeEnterSentAt: number;
+  loginEnterSentAt: number;
+  securityEnterSentAt: number;
+  trustEnterSentAt: number;
 }
 
 const sessions = new Map<string, LoginSession>();
@@ -87,10 +88,10 @@ export async function beginClaudeCodeLogin(now = Date.now()): Promise<ClaudeCode
     waiters: [],
     pollTimer: null,
     refreshing: false,
-    sentThemeEnter: false,
-    sentLoginEnter: false,
-    sentSecurityEnter: false,
-    sentTrustEnter: false,
+    themeEnterSentAt: 0,
+    loginEnterSentAt: 0,
+    securityEnterSentAt: 0,
+    trustEnterSentAt: 0,
   };
   sessions.set(id, session);
   startPolling(session);
@@ -280,10 +281,10 @@ async function getOrRecoverSession(sessionId: string): Promise<LoginSession | nu
     waiters: [],
     pollTimer: null,
     refreshing: false,
-    sentThemeEnter: false,
-    sentLoginEnter: false,
-    sentSecurityEnter: false,
-    sentTrustEnter: false,
+    themeEnterSentAt: 0,
+    loginEnterSentAt: 0,
+    securityEnterSentAt: 0,
+    trustEnterSentAt: 0,
   };
   sessions.set(sessionId, session);
   startPolling(session);
@@ -347,24 +348,58 @@ function updateExitMarker(session: LoginSession): void {
   );
 }
 
-function driveClaudeLoginPrompts(session: LoginSession): void {
-  const output = cleanClaudeCodeOutput(session.output);
-  if (!session.sentThemeEnter && output.includes("Choose the text style that looks best with your terminal")) {
-    session.sentThemeEnter = true;
-    void sendTmuxKey(session.tmuxName, "Enter");
+function driveClaudeLoginPrompts(session: LoginSession, now = Date.now()): void {
+  const screen = currentScreenText(session.output);
+  if (screen.includes("Welcome back") || screen.includes("Tips for getting started")) return;
+
+  const latestPrompt = latestClaudePrompt(screen);
+  if (latestPrompt === "paste_code") return;
+  if (latestPrompt === "trust") {
+    session.trustEnterSentAt = sendPromptEnter(session, session.trustEnterSentAt, now);
+    return;
   }
-  if (!session.sentLoginEnter && output.includes("Select login method:")) {
-    session.sentLoginEnter = true;
-    void sendTmuxKey(session.tmuxName, "Enter");
+  if (latestPrompt === "security") {
+    session.securityEnterSentAt = sendPromptEnter(session, session.securityEnterSentAt, now);
+    return;
   }
-  if (!session.sentSecurityEnter && output.includes("Press Enter to continue")) {
-    session.sentSecurityEnter = true;
-    void sendTmuxKey(session.tmuxName, "Enter");
+  if (latestPrompt === "login_method") {
+    session.loginEnterSentAt = sendPromptEnter(session, session.loginEnterSentAt, now);
+    return;
   }
-  if (!session.sentTrustEnter && output.includes("Quick safety check") && output.includes("Yes, I trust this folder")) {
-    session.sentTrustEnter = true;
-    void sendTmuxKey(session.tmuxName, "Enter");
+  if (latestPrompt === "theme") {
+    session.themeEnterSentAt = sendPromptEnter(session, session.themeEnterSentAt, now);
   }
+}
+
+function latestClaudePrompt(screen: string): "theme" | "login_method" | "paste_code" | "security" | "trust" | null {
+  const prompts: Array<{ name: NonNullable<ReturnType<typeof latestClaudePrompt>>; index: number }> = [
+    { name: "theme", index: screen.lastIndexOf("Choose the text style that looks best with your terminal") },
+    { name: "login_method", index: screen.lastIndexOf("Select login method:") },
+    { name: "paste_code", index: screen.lastIndexOf("Paste code here if prompted") },
+    { name: "security", index: screen.lastIndexOf("Press Enter to continue") },
+    {
+      name: "trust",
+      index:
+        screen.includes("Quick safety check") && screen.includes("Yes, I trust this folder")
+          ? screen.lastIndexOf("Quick safety check")
+          : -1,
+    },
+  ];
+  const latest = prompts
+    .filter((prompt) => prompt.index >= 0)
+    .sort((left, right) => right.index - left.index)
+    .at(0);
+  return latest?.name ?? null;
+}
+
+function currentScreenText(output: string): string {
+  return cleanClaudeCodeOutput(output).split("\n").slice(-80).join("\n");
+}
+
+function sendPromptEnter(session: LoginSession, lastSentAt: number, now: number): number {
+  if (now - lastSentAt < PROMPT_RETRY_MS) return lastSentAt;
+  void sendTmuxKey(session.tmuxName, "C-m");
+  return now;
 }
 
 function waitForOutput<T>(
