@@ -160,7 +160,7 @@ export function hashApiKeySecret(secret: string): string {
 }
 
 function generateApiKeySecret(): { prefix: string; plaintextKey: string } {
-  const prefix = `cclb_${randomBytes(6).toString("base64url")}`;
+  const prefix = `sk-cclb_${randomBytes(6).toString("base64url")}`;
   return {
     prefix,
     plaintextKey: `${prefix}_${randomBytes(32).toString("base64url")}`,

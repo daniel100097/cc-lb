@@ -38,6 +38,7 @@ describe("api key repository", () => {
       now,
     );
 
+    expect(created.apiKey.prefix).toStartWith("sk-");
     expect(created.plaintextKey).toStartWith(`${created.apiKey.prefix}_`);
     expect(created.apiKey.allowed_models).toEqual(["claude-sonnet-4"]);
     expect(created.apiKey.assigned_account_ids).toEqual(["acct-a"]);
@@ -71,6 +72,8 @@ describe("api key repository", () => {
     const active = createApiKey({ name: "Rotate" }, now);
     const rotated = regenerateApiKey(active.apiKey.id, now + 10);
     expect(rotated?.plaintextKey).not.toBe(active.plaintextKey);
+    expect(rotated?.apiKey.prefix).toStartWith("sk-");
+    expect(rotated?.plaintextKey).toStartWith(`${rotated?.apiKey.prefix}_`);
     expect(validateApiKeySecret(active.plaintextKey, now + 11).reason).toBe("invalid");
     expect(validateApiKeySecret(rotated?.plaintextKey ?? "", now + 12).ok).toBe(true);
 
