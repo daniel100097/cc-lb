@@ -21,11 +21,12 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint .",
     "test": "bun test ./src/**/*.test.ts ./frontend/src/**/*.test.ts",
-    "test:e2e": "playwright test tests/e2e --browser=chromium",
+    "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "start": "bun src/index.ts",
-    "healthcheck": "bun src/healthcheck.ts"
+    "healthcheck": "bun src/healthcheck.ts",
+    "compare-proxy": "bun run scripts/compare-proxy.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
@@ -42,6 +43,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
+    "@anthropic-ai/claude-code": "^2.1.201",
     "@hookform/resolvers": "^5.4.0",
     "@tanstack/react-query": "^5.101.2",
     "@trpc/client": "^11.18.0",
@@ -60,5 +62,8 @@
     "tailwind-merge": "^3.6.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.14"
-  }
+  },
+  "trustedDependencies": [
+    "@anthropic-ai/claude-code"
+  ]
 }

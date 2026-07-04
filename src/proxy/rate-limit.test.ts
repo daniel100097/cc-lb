@@ -1,5 +1,25 @@
-import { describe, expect, test } from "bun:test";
-import { parseRateLimit } from "./rate-limit";
+import { afterAll, describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+
+const dbPath = `/tmp/cc-lb-ratelimit-test-${process.pid}.db`;
+for (const suffix of ["", "-wal", "-shm"]) {
+  rmSync(`${dbPath}${suffix}`, { force: true });
+}
+process.env.DB_PATH = dbPath;
+const accountsDir = `/tmp/cc-lb-ratelimit-accounts-${process.pid}`;
+process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
+
+const { applyCooldown, MIN_COOLDOWN_FLOOR_MS, parseRateLimit } = await import("./rate-limit");
+const { createAccount, getAccount, updateAccount } = await import("../db/accounts");
+const { DEFAULT_SETTINGS } = await import("../db/settings");
+const { seedAccountCredentials } = await import("../testing/seed-credentials");
+
+afterAll(() => {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    rmSync(`${dbPath}${suffix}`, { force: true });
+  }
+  rmSync(accountsDir, { recursive: true, force: true });
+});
 
 const now = 1_800_000_000_000;
 
@@ -68,5 +88,114 @@ describe("parseRateLimit", () => {
       now,
     );
     expect(info.isRateLimited).toBe(false);
+  });
+
+  test("flags out_of_credits on 429 with the overage-disabled-reason header", () => {
+    const info = parseRateLimit(
+      new Response("limited", {
+        status: 429,
+        headers: { "anthropic-ratelimit-unified-overage-disabled-reason": "out_of_credits" },
+      }),
+      now,
+    );
+    expect(info.isRateLimited).toBe(true);
+    expect(info.outOfCredits).toBe(true);
+  });
+
+  test("does not flag out_of_credits on a plain 429", () => {
+    const info = parseRateLimit(new Response("limited", { status: 429 }), now);
+    expect(info.outOfCredits).toBe(false);
+  });
+
+  test("requires an exact case-sensitive out_of_credits value", () => {
+    const info = parseRateLimit(
+      new Response("limited", {
+        status: 429,
+        headers: { "anthropic-ratelimit-unified-overage-disabled-reason": "Out_Of_Credits" },
+      }),
+      now,
+    );
+    expect(info.outOfCredits).toBe(false);
+  });
+
+  test("ignores the out_of_credits header on non-429 responses", () => {
+    const info = parseRateLimit(
+      new Response("ok", {
+        status: 200,
+        headers: {
+          "anthropic-ratelimit-unified-status": "allowed_warning",
+          "anthropic-ratelimit-unified-overage-disabled-reason": "out_of_credits",
+        },
+      }),
+      now,
+    );
+    expect(info.outOfCredits).toBe(false);
+  });
+});
+
+describe("applyCooldown", () => {
+  let accountSeq = 0;
+  function makeAccount(overrides: { consecutive_rate_limits?: number } = {}) {
+    accountSeq += 1;
+    const account = createAccount({
+      name: `Cooldown ${process.pid}-${accountSeq}`,
+    });
+    seedAccountCredentials(account.id, {
+      accessToken: `cooldown-access-${accountSeq}`,
+      refreshToken: `cooldown-refresh-${accountSeq}`,
+      expiresAt: now + 3_600_000,
+    });
+    if (overrides.consecutive_rate_limits !== undefined) {
+      updateAccount(account.id, { consecutive_rate_limits: overrides.consecutive_rate_limits });
+      const reloaded = getAccount(account.id);
+      if (!reloaded) throw new Error("account vanished");
+      return reloaded;
+    }
+    return account;
+  }
+
+  const baseInfo = { isRateLimited: true, status: "rate_limited", remaining: 0, outOfCredits: false };
+
+  test("never cools shorter than the upstream reset", () => {
+    const account = makeAccount();
+    applyCooldown(account, { ...baseInfo, resetTime: now + 600_000 }, DEFAULT_SETTINGS, now);
+    expect(account.rate_limited_until).toBe(now + 600_000);
+    expect(getAccount(account.id)?.rate_limited_until).toBe(now + 600_000);
+  });
+
+  test("floors short upstream resets to the minimum cooldown", () => {
+    const account = makeAccount();
+    applyCooldown(account, { ...baseInfo, resetTime: now + 5_000 }, DEFAULT_SETTINGS, now);
+    expect(account.rate_limited_until).toBe(now + MIN_COOLDOWN_FLOOR_MS);
+  });
+
+  test("uses base backoff when no reset is known", () => {
+    const account = makeAccount();
+    applyCooldown(account, { ...baseInfo, resetTime: null }, DEFAULT_SETTINGS, now);
+    expect(account.rate_limited_until).toBe(now + DEFAULT_SETTINGS.rateLimitBackoffBaseMs);
+    expect(account.consecutive_rate_limits).toBe(1);
+  });
+
+  test("doubles backoff with the consecutive counter", () => {
+    const account = makeAccount({ consecutive_rate_limits: 1 });
+    applyCooldown(account, { ...baseInfo, resetTime: null }, DEFAULT_SETTINGS, now);
+    expect(account.rate_limited_until).toBe(now + DEFAULT_SETTINGS.rateLimitBackoffBaseMs * 2);
+  });
+
+  test("caps backoff at the configured maximum", () => {
+    const account = makeAccount({ consecutive_rate_limits: 10 });
+    applyCooldown(account, { ...baseInfo, resetTime: null }, DEFAULT_SETTINGS, now);
+    expect(account.rate_limited_until).toBe(now + DEFAULT_SETTINGS.rateLimitBackoffMaxMs);
+  });
+
+  test("persists counter and metadata on the reset path", () => {
+    const account = makeAccount();
+    applyCooldown(account, { ...baseInfo, resetTime: now + 600_000 }, DEFAULT_SETTINGS, now);
+    applyCooldown(account, { ...baseInfo, resetTime: now + 600_000 }, DEFAULT_SETTINGS, now);
+    const stored = getAccount(account.id);
+    expect(stored?.consecutive_rate_limits).toBe(2);
+    expect(stored?.rate_limit_status).toBe("rate_limited");
+    expect(stored?.rate_limit_reset).toBe(now + 600_000);
+    expect(stored?.rate_limit_remaining).toBe(0);
   });
 });

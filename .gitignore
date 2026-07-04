@@ -18,9 +18,15 @@ data
 # cloned reference repos (research only)
 reference
 
+# local planning notes
+plans.local/
+
 # code coverage
 coverage
 *.lcov
+test-results
+playwright-report
+output/playwright
 
 # logs
 logs

@@ -1,0 +1,394 @@
+import type { Account } from "./accounts";
+import { listAccounts } from "./accounts";
+import { db } from "./client";
+
+export type AnalyticsRange = "1d" | "7d" | "30d";
+
+export interface UsageSummary {
+  requestCount: number;
+  tokenTotal: number;
+  cachedTokenTotal: number;
+  costUsd: number;
+  errorCount: number;
+  errorRate: number;
+  topError: { label: string; count: number } | null;
+}
+
+export interface TrendBucket extends UsageSummary {
+  startTs: number;
+}
+
+export interface AccountCreditApproximation {
+  accountId: string;
+  accountName: string;
+  rateLimitStatus: string | null;
+  rateLimitRemaining: number | null;
+  rateLimitReset: number | null;
+  fiveHourRemaining: number | null;
+  sevenDayRemaining: number | null;
+}
+
+export interface AccountUsageSummary extends UsageSummary {
+  accountId: string | null;
+  accountName: string | null;
+  credit: AccountCreditApproximation | null;
+}
+
+export interface DashboardAnalytics {
+  range: AnalyticsRange;
+  since: number;
+  until: number;
+  bucketMs: number;
+  overview: UsageSummary;
+  trend: TrendBucket[];
+  accountSummaries: AccountUsageSummary[];
+  creditApproximations: {
+    fiveHourRemaining: number | null;
+    sevenDayRemaining: number | null;
+    accounts: AccountCreditApproximation[];
+  };
+}
+
+export interface ApiKeyAnalytics {
+  apiKeyId: string;
+  range: AnalyticsRange;
+  since: number;
+  until: number;
+  bucketMs: number;
+  overview: UsageSummary;
+  trend: TrendBucket[];
+  usageByAccount7d: AccountUsageSummary[];
+}
+
+const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+const TOKEN_EXPR = "COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)";
+const CACHED_TOKEN_EXPR = "COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)";
+const ERROR_EXPR =
+  "(COALESCE(outcome, '') NOT IN ('ok', 'telemetry') OR (status IS NOT NULL AND status >= 400))";
+
+export function getDashboardAnalytics(range: AnalyticsRange, now = Date.now()): DashboardAnalytics {
+  const { since, until, bucketMs } = rangeWindow(range, now);
+  const accounts = listAccounts();
+  const accountSummaries = getAccountUsageSummaries(since, until, accounts);
+  const creditAccounts = accounts.map((account) => toCreditApproximation(account, now));
+
+  return {
+    range,
+    since,
+    until,
+    bucketMs,
+    overview: getUsageSummary(since, until),
+    trend: getTrendBuckets(since, until, bucketMs),
+    accountSummaries,
+    creditApproximations: {
+      fiveHourRemaining: sumNullable(creditAccounts.map((account) => account.fiveHourRemaining)),
+      sevenDayRemaining: sumNullable(creditAccounts.map((account) => account.sevenDayRemaining)),
+      accounts: creditAccounts,
+    },
+  };
+}
+
+export function getApiKeyAnalytics(
+  apiKeyId: string,
+  range: AnalyticsRange,
+  now = Date.now(),
+): ApiKeyAnalytics {
+  const { since, until, bucketMs } = rangeWindow(range, now);
+  return {
+    apiKeyId,
+    range,
+    since,
+    until,
+    bucketMs,
+    overview: getUsageSummary(since, until, apiKeyId),
+    trend: getTrendBuckets(since, until, bucketMs, apiKeyId),
+    usageByAccount7d: getAccountUsageSummaries(now - SEVEN_DAYS_MS, now, listAccounts(), apiKeyId),
+  };
+}
+
+export function listApiKeyUsageSummaries(
+  since = Date.now() - THIRTY_DAYS_MS,
+  until = Date.now(),
+): Record<string, UsageSummary> {
+  const rows = queryRows<ApiKeyUsageSummaryRow>(
+    `
+      SELECT
+        api_key_id AS apiKeyId,
+        COUNT(*) AS requestCount,
+        COALESCE(SUM(${TOKEN_EXPR}), 0) AS tokenTotal,
+        COALESCE(SUM(${CACHED_TOKEN_EXPR}), 0) AS cachedTokenTotal,
+        COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS costUsd,
+        COALESCE(SUM(CASE WHEN ${ERROR_EXPR} THEN 1 ELSE 0 END), 0) AS errorCount
+      FROM request_log
+      WHERE ts >= ? AND ts <= ? AND api_key_id IS NOT NULL
+      GROUP BY api_key_id
+    `,
+    [since, until],
+  );
+  const result: Record<string, UsageSummary> = {};
+  for (const row of rows) {
+    result[row.apiKeyId] = withDerivedSummary({
+      requestCount: toNumber(row.requestCount),
+      tokenTotal: toNumber(row.tokenTotal),
+      cachedTokenTotal: toNumber(row.cachedTokenTotal),
+      costUsd: toNumber(row.costUsd),
+      errorCount: toNumber(row.errorCount),
+      topError: getTopError(since, until, row.apiKeyId),
+    });
+  }
+  return result;
+}
+
+function getUsageSummary(since: number, until: number, apiKeyId?: string): UsageSummary {
+  const { clause, params } = timeWhere(since, until, apiKeyId);
+  const row = queryOne<UsageSummaryRow>(
+    `
+      SELECT
+        COUNT(*) AS requestCount,
+        COALESCE(SUM(${TOKEN_EXPR}), 0) AS tokenTotal,
+        COALESCE(SUM(${CACHED_TOKEN_EXPR}), 0) AS cachedTokenTotal,
+        COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS costUsd,
+        COALESCE(SUM(CASE WHEN ${ERROR_EXPR} THEN 1 ELSE 0 END), 0) AS errorCount
+      FROM request_log
+      WHERE ${clause}
+    `,
+    params,
+  );
+  return withDerivedSummary({
+    requestCount: toNumber(row?.requestCount),
+    tokenTotal: toNumber(row?.tokenTotal),
+    cachedTokenTotal: toNumber(row?.cachedTokenTotal),
+    costUsd: toNumber(row?.costUsd),
+    errorCount: toNumber(row?.errorCount),
+    topError: getTopError(since, until, apiKeyId),
+  });
+}
+
+function getTrendBuckets(
+  since: number,
+  until: number,
+  bucketMs: number,
+  apiKeyId?: string,
+): TrendBucket[] {
+  const { clause, params } = timeWhere(since, until, apiKeyId);
+  const rows = queryRows<TrendBucketRow>(
+    `
+      SELECT
+        CAST((ts / ?) AS INTEGER) * ? AS startTs,
+        COUNT(*) AS requestCount,
+        COALESCE(SUM(${TOKEN_EXPR}), 0) AS tokenTotal,
+        COALESCE(SUM(${CACHED_TOKEN_EXPR}), 0) AS cachedTokenTotal,
+        COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS costUsd,
+        COALESCE(SUM(CASE WHEN ${ERROR_EXPR} THEN 1 ELSE 0 END), 0) AS errorCount
+      FROM request_log
+      WHERE ${clause}
+      GROUP BY startTs
+      ORDER BY startTs ASC
+    `,
+    [bucketMs, bucketMs, ...params],
+  );
+  const byStart = new Map(rows.map((row) => [toNumber(row.startTs), row]));
+  const buckets: TrendBucket[] = [];
+  const firstBucket = Math.floor(since / bucketMs) * bucketMs;
+
+  for (let startTs = firstBucket; startTs <= until; startTs += bucketMs) {
+    const row = byStart.get(startTs);
+    buckets.push(
+      withDerivedSummary({
+        startTs,
+        requestCount: toNumber(row?.requestCount),
+        tokenTotal: toNumber(row?.tokenTotal),
+        cachedTokenTotal: toNumber(row?.cachedTokenTotal),
+        costUsd: toNumber(row?.costUsd),
+        errorCount: toNumber(row?.errorCount),
+        topError: null,
+      }),
+    );
+  }
+
+  return buckets;
+}
+
+function getTopError(since: number, until: number, apiKeyId?: string): { label: string; count: number } | null {
+  const { clause, params } = timeWhere(since, until, apiKeyId);
+  const row = queryOne<TopErrorRow>(
+    `
+      SELECT
+        COALESCE(
+          NULLIF(error, ''),
+          NULLIF(outcome, ''),
+          CASE WHEN status IS NULL THEN 'unknown' ELSE 'HTTP ' || status END
+        ) AS label,
+        COUNT(*) AS count
+      FROM request_log
+      WHERE ${clause} AND ${ERROR_EXPR}
+      GROUP BY label
+      ORDER BY count DESC
+      LIMIT 1
+    `,
+    params,
+  );
+  if (!row) return null;
+  return { label: String(row.label).slice(0, 160), count: toNumber(row.count) };
+}
+
+function getAccountUsageSummaries(
+  since: number,
+  until: number,
+  accounts: Account[],
+  apiKeyId?: string,
+): AccountUsageSummary[] {
+  const { clause, params } = timeWhere(since, until, apiKeyId);
+  const rows = queryRows<AccountUsageSummaryRow>(
+    `
+      SELECT
+        request_log.account_id AS accountId,
+        accounts.name AS accountName,
+        COUNT(*) AS requestCount,
+        COALESCE(SUM(${TOKEN_EXPR}), 0) AS tokenTotal,
+        COALESCE(SUM(${CACHED_TOKEN_EXPR}), 0) AS cachedTokenTotal,
+        COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS costUsd,
+        COALESCE(SUM(CASE WHEN ${ERROR_EXPR} THEN 1 ELSE 0 END), 0) AS errorCount
+      FROM request_log
+      LEFT JOIN accounts ON accounts.id = request_log.account_id
+      WHERE ${clause}
+      GROUP BY request_log.account_id
+      ORDER BY requestCount DESC
+    `,
+    params,
+  );
+  const byAccountId = new Map(rows.map((row) => [row.accountId, row]));
+  const summaries = accounts.map((account) => {
+    const row = byAccountId.get(account.id);
+    byAccountId.delete(account.id);
+    return accountUsageFromRow(row, account.id, account.name, toCreditApproximation(account, until));
+  });
+
+  for (const row of byAccountId.values()) {
+    summaries.push(accountUsageFromRow(row, row.accountId, row.accountName, null));
+  }
+
+  return summaries;
+}
+
+function accountUsageFromRow(
+  row: AccountUsageSummaryRow | undefined,
+  accountId: string | null,
+  accountName: string | null,
+  credit: AccountCreditApproximation | null,
+): AccountUsageSummary {
+  return {
+    ...withDerivedSummary({
+      requestCount: toNumber(row?.requestCount),
+      tokenTotal: toNumber(row?.tokenTotal),
+      cachedTokenTotal: toNumber(row?.cachedTokenTotal),
+      costUsd: toNumber(row?.costUsd),
+      errorCount: toNumber(row?.errorCount),
+      topError: null,
+    }),
+    accountId,
+    accountName,
+    credit,
+  };
+}
+
+function toCreditApproximation(account: Account, now: number): AccountCreditApproximation {
+  const resetInMs = account.rate_limit_reset === null ? null : account.rate_limit_reset - now;
+  const remaining = account.rate_limit_remaining;
+  const usableWindow = remaining !== null && resetInMs !== null && resetInMs >= 0;
+  return {
+    accountId: account.id,
+    accountName: account.name,
+    rateLimitStatus: account.rate_limit_status,
+    rateLimitRemaining: remaining,
+    rateLimitReset: account.rate_limit_reset,
+    fiveHourRemaining: usableWindow && resetInMs <= FIVE_HOURS_MS ? remaining : null,
+    sevenDayRemaining: usableWindow && resetInMs <= SEVEN_DAYS_MS ? remaining : null,
+  };
+}
+
+function rangeWindow(range: AnalyticsRange, now: number): { since: number; until: number; bucketMs: number } {
+  const ms =
+    range === "1d" ? 24 * 60 * 60 * 1000 : range === "7d" ? SEVEN_DAYS_MS : THIRTY_DAYS_MS;
+  const bucketMs =
+    range === "1d" ? 60 * 60 * 1000 : range === "7d" ? 6 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  return { since: now - ms, until: now, bucketMs };
+}
+
+function timeWhere(
+  since: number,
+  until: number,
+  apiKeyId?: string,
+): { clause: string; params: Array<string | number> } {
+  if (apiKeyId) {
+    return { clause: "ts >= ? AND ts <= ? AND api_key_id = ?", params: [since, until, apiKeyId] };
+  }
+  return { clause: "ts >= ? AND ts <= ?", params: [since, until] };
+}
+
+function withDerivedSummary<T extends Omit<UsageSummary, "errorRate">>(summary: T): T & UsageSummary {
+  return {
+    ...summary,
+    requestCount: summary.requestCount,
+    tokenTotal: summary.tokenTotal,
+    cachedTokenTotal: summary.cachedTokenTotal,
+    costUsd: summary.costUsd,
+    errorCount: summary.errorCount,
+    errorRate: summary.requestCount > 0 ? summary.errorCount / summary.requestCount : 0,
+    topError: summary.topError,
+  };
+}
+
+function sumNullable(values: Array<number | null>): number | null {
+  let total = 0;
+  let seen = false;
+  for (const value of values) {
+    if (value === null) continue;
+    total += value;
+    seen = true;
+  }
+  return seen ? total : null;
+}
+
+function queryOne<T>(sql: string, params: Array<string | number>): T | null {
+  const row = db.query<T, Array<string | number>>(sql).get(...params);
+  return row ?? null;
+}
+
+function queryRows<T>(sql: string, params: Array<string | number>): T[] {
+  return db.query<T, Array<string | number>>(sql).all(...params);
+}
+
+function toNumber(value: unknown): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+interface UsageSummaryRow {
+  requestCount: number;
+  tokenTotal: number;
+  cachedTokenTotal: number;
+  costUsd: number;
+  errorCount: number;
+}
+
+interface TrendBucketRow extends UsageSummaryRow {
+  startTs: number;
+}
+
+interface TopErrorRow {
+  label: string;
+  count: number;
+}
+
+interface AccountUsageSummaryRow extends UsageSummaryRow {
+  accountId: string | null;
+  accountName: string | null;
+}
+
+interface ApiKeyUsageSummaryRow extends UsageSummaryRow {
+  apiKeyId: string;
+}

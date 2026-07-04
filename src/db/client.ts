@@ -23,6 +23,8 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       CREATE TABLE accounts (
         id                      TEXT PRIMARY KEY,
         name                    TEXT NOT NULL,
+        auth_type               TEXT NOT NULL DEFAULT 'oauth_refresh',
+        device_id_override      TEXT,
         access_token            TEXT,
         refresh_token           TEXT,
         expires_at              INTEGER,
@@ -99,6 +101,47 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       CREATE INDEX IF NOT EXISTS idx_oauth_sessions_expires_at ON oauth_sessions(expires_at);
     `,
   },
+  {
+    id: "004_request_log_details",
+    sql: `
+      ALTER TABLE request_log ADD COLUMN method TEXT;
+      ALTER TABLE request_log ADD COLUMN path TEXT;
+      ALTER TABLE request_log ADD COLUMN failover_attempt INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE request_log ADD COLUMN latency_ms INTEGER;
+      ALTER TABLE request_log ADD COLUMN total_ms INTEGER;
+      ALTER TABLE request_log ADD COLUMN error TEXT;
+      ALTER TABLE request_log ADD COLUMN upstream_request_id TEXT;
+      ALTER TABLE request_log ADD COLUMN input_tokens INTEGER;
+      ALTER TABLE request_log ADD COLUMN output_tokens INTEGER;
+      ALTER TABLE request_log ADD COLUMN cache_read_tokens INTEGER;
+      ALTER TABLE request_log ADD COLUMN cache_creation_tokens INTEGER;
+      ALTER TABLE request_log ADD COLUMN cost_usd REAL;
+      CREATE INDEX IF NOT EXISTS idx_request_log_outcome_ts ON request_log(outcome, ts);
+    `,
+  },
+  {
+    id: "005_api_keys",
+    sql: `
+      CREATE TABLE IF NOT EXISTS api_keys (
+        id                    TEXT PRIMARY KEY,
+        name                  TEXT NOT NULL,
+        prefix                TEXT NOT NULL,
+        key_hash              TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'active',
+        expires_at            INTEGER,
+        allowed_models        TEXT,
+        traffic_class         TEXT NOT NULL DEFAULT 'default',
+        account_scope_enabled INTEGER NOT NULL DEFAULT 0,
+        assigned_account_ids  TEXT,
+        created_at            INTEGER NOT NULL,
+        updated_at            INTEGER NOT NULL,
+        last_used_at          INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);
+      CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status);
+    `,
+  },
 ];
 
 function migrate() {
@@ -113,6 +156,29 @@ function migrate() {
   for (const migration of MIGRATIONS) {
     if (!applied.has(migration.id)) tx(migration);
   }
+  ensureColumn("request_log", "api_key_id", "TEXT");
+  ensureColumn("accounts", "auth_type", "TEXT NOT NULL DEFAULT 'oauth_refresh'");
+  ensureColumn("accounts", "device_id_override", "TEXT");
+  ensureColumn("accounts", "usage_windows", "TEXT");
+  ensureColumn("accounts", "usage_checked_at", "INTEGER");
+  dropColumn("accounts", "access_token");
+  dropColumn("accounts", "refresh_token");
+  dropColumn("accounts", "expires_at");
+  dropColumn("accounts", "refresh_token_issued_at");
+  dropColumn("accounts", "scopes");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_request_log_api_key_ts ON request_log(api_key_id, ts);");
 }
 
 migrate();
+
+function ensureColumn(table: string, column: string, definition: string): void {
+  const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+  if (rows.some((row) => row.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+}
+
+function dropColumn(table: string, column: string): void {
+  const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+  if (!rows.some((row) => row.name === column)) return;
+  db.exec(`ALTER TABLE ${table} DROP COLUMN ${column};`);
+}

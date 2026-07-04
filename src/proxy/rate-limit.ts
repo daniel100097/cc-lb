@@ -4,13 +4,16 @@ import type { Settings } from "../db/settings";
 
 const HARD_LIMIT_STATUSES = new Set(["rate_limited", "blocked", "queueing_hard", "payment_required"]);
 const MAX_RESET_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_429_COOLDOWN_MS = 60_000;
+/** Minimum bench once upstream reports a reset; also the default cooldown for a headerless 429. */
+export const MIN_COOLDOWN_FLOOR_MS = 60_000;
 
 export interface RateLimitInfo {
   isRateLimited: boolean;
   status: string | null;
   resetTime: number | null; // ms epoch, or null if unknown
   remaining: number | null;
+  /** 429 scoped to a model/beta (overage-disabled-reason: out_of_credits) — fail over without benching. */
+  outOfCredits: boolean;
 }
 
 function clampResetTime(ms: number, now: number): number | null {
@@ -29,6 +32,8 @@ export function parseRateLimit(res: Response, now: number): RateLimitInfo {
   const is429 = res.status === 429;
   const is529 = res.status === 529;
   const isRateLimited = hardStatus || is429 || is529;
+  const outOfCredits =
+    is429 && res.headers.get("anthropic-ratelimit-unified-overage-disabled-reason") === "out_of_credits";
 
   let resetTime: number | null = null;
   if (resetHeader) {
@@ -48,10 +53,10 @@ export function parseRateLimit(res: Response, now: number): RateLimitInfo {
     const xReset = res.headers.get("x-ratelimit-reset");
     if (resetTime === null && xReset) resetTime = clampResetTime(Number(xReset) * 1000, now);
     // 429 with no reset info at all → default cooldown.
-    if (resetTime === null && is429) resetTime = now + DEFAULT_429_COOLDOWN_MS;
+    if (resetTime === null && is429) resetTime = now + MIN_COOLDOWN_FLOOR_MS;
   }
 
-  return { isRateLimited, status: status ?? null, resetTime, remaining };
+  return { isRateLimited, status: status ?? null, resetTime, remaining, outOfCredits };
 }
 
 function computeBackoffMs(consecutive: number, settings: Settings): number {
@@ -59,7 +64,11 @@ function computeBackoffMs(consecutive: number, settings: Settings): number {
   return Math.min(backoff, settings.rateLimitBackoffMaxMs);
 }
 
-/** Mark the account cooled down: min(reset, now+backoff). */
+/**
+ * Mark the account cooled down. When upstream reports a reset, bench until it —
+ * never shorter — with a MIN_COOLDOWN_FLOOR_MS floor. Without a reset, pure
+ * exponential backoff driven by the consecutive counter.
+ */
 export function applyCooldown(
   account: Account,
   info: RateLimitInfo,
@@ -68,7 +77,8 @@ export function applyCooldown(
 ): void {
   const n = account.consecutive_rate_limits + 1;
   const backoff = computeBackoffMs(n, settings);
-  const cooldownUntil = info.resetTime ? Math.min(info.resetTime, now + backoff) : now + backoff;
+  const cooldownUntil =
+    info.resetTime !== null ? Math.max(info.resetTime, now + MIN_COOLDOWN_FLOOR_MS) : now + backoff;
   updateAccount(account.id, {
     rate_limited_until: cooldownUntil,
     consecutive_rate_limits: n,
@@ -90,10 +100,16 @@ export function recordMetadata(account: Account, info: RateLimitInfo): void {
   });
 }
 
-/** On a successful response, clear cooldown + reset the consecutive counter. */
-export function clearRateLimit(account: Account): void {
-  if (account.rate_limited_until === null && account.consecutive_rate_limits === 0) return;
-  updateAccount(account.id, { rate_limited_until: null, consecutive_rate_limits: 0 });
+/** On a successful response, clear cooldown. Reset the counter after a healthy quiet window. */
+export function clearRateLimit(account: Account, now = Date.now()): void {
+  const healthyForMs = account.last_used === null ? 0 : now - account.last_used;
+  const resetConsecutive = account.consecutive_rate_limits > 0 && healthyForMs >= 5 * 60 * 1000;
+  if (account.rate_limited_until === null && !resetConsecutive) return;
+
+  updateAccount(account.id, {
+    rate_limited_until: null,
+    consecutive_rate_limits: resetConsecutive ? 0 : account.consecutive_rate_limits,
+  });
   account.rate_limited_until = null;
-  account.consecutive_rate_limits = 0;
+  if (resetConsecutive) account.consecutive_rate_limits = 0;
 }

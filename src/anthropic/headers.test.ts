@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { OAUTH_BETA_HEADER } from "./constants";
-import { prepareRequestHeaders, sanitizeResponseHeaders } from "./headers";
+import { DEVICE_ID_HEADER, prepareRequestHeaders, sanitizeResponseHeaders } from "./headers";
 
 describe("Anthropic headers", () => {
   test("strips client credentials and injects OAuth bearer token", () => {
@@ -24,6 +24,19 @@ describe("Anthropic headers", () => {
   test("does not duplicate oauth beta header", () => {
     const headers = prepareRequestHeaders(new Headers({ "anthropic-beta": OAUTH_BETA_HEADER }), "token");
     expect(headers.get("anthropic-beta")?.split(OAUTH_BETA_HEADER).length).toBe(2);
+  });
+
+  test("does not add outbound device id when the incoming request has none", () => {
+    const headers = prepareRequestHeaders(new Headers(), "token", "account-device");
+    expect(headers.get(DEVICE_ID_HEADER)).toBeNull();
+  });
+
+  test("overrides outbound device id only when the incoming request already has one", () => {
+    const preserved = prepareRequestHeaders(new Headers({ [DEVICE_ID_HEADER]: "client-device" }), "token");
+    expect(preserved.get(DEVICE_ID_HEADER)).toBe("client-device");
+
+    const overridden = prepareRequestHeaders(new Headers({ [DEVICE_ID_HEADER]: "client-device" }), "token", "account-device");
+    expect(overridden.get(DEVICE_ID_HEADER)).toBe("account-device");
   });
 
   test("sanitizes decompression-sensitive response headers", () => {
