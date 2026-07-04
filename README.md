@@ -28,9 +28,11 @@ Two ways, from the dashboard:
 With Docker, the image includes the `claude` CLI and the dashboard drives this
 flow from the **Claude Code CLI** tab.
 
-Each account can also set an optional device ID override. cc-lb only applies it
-when the incoming request already includes `x-device-id` or a device ID field in
-the JSON body; it never adds a device ID signal to requests that lack one.
+Each account can also set an optional device ID override. It is location-scoped:
+an incoming `x-device-id` header is rewritten to the override, and device ID
+fields inside the JSON body are rewritten to the override — each only when the
+client sent one there. cc-lb never adds a device ID signal to a location that
+lacked one.
 
 ## Run (dev)
 

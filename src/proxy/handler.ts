@@ -1,5 +1,5 @@
 import { API_BASE } from "../anthropic/constants";
-import { DEVICE_ID_HEADER, prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
+import { prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
 import { checkRefreshTokenHealth } from "../anthropic/token-health";
 import { getValidAccessToken } from "../anthropic/token-manager";
 import { isStrategyName, selectAccount } from "../balancer/strategies";
@@ -56,7 +56,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
     accounts = accounts.filter((account) => assigned.has(account.id));
   }
   const stickyKey = settings.stickySessions ? deriveStickyKey(req.headers, parsedBody) : null;
-  const allowDeviceIdOverride = req.headers.has(DEVICE_ID_HEADER) || hasDeviceIdInBody(parsedBody);
+  const bodySignals = scanBodyIdentity(parsedBody);
   const stickyPinnedId = stickyKey ? getSticky(stickyKey, settings.stickyTtlMs, now) : null;
   const ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
   if (ordered.length === 0) {
@@ -76,7 +76,8 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       model,
       apiKeyId: proxyAuth.apiKey?.id ?? null,
       failoverAttempt,
-      allowDeviceIdOverride,
+      parsedBody,
+      bodySignals,
     });
     if (res === null) {
       failoverAttempt += 1;
@@ -133,7 +134,8 @@ async function attempt(
   }
 
   const target = `${API_BASE}${url.pathname}${url.search}`;
-  const headers = prepareRequestHeaders(req.headers, accessToken, account.device_id_override, context.allowDeviceIdOverride);
+  const headers = prepareRequestHeaders(req.headers, accessToken, account.device_id_override);
+  const outboundBody = buildAttemptBody(bodyBuf, account, context);
 
   let upstream: Response;
   let info;
@@ -145,7 +147,7 @@ async function attempt(
       upstream = await fetch(target, {
         method: req.method,
         headers,
-        body: bodyBuf && bodyBuf.byteLength > 0 ? bodyBuf : undefined,
+        body: outboundBody && outboundBody.byteLength > 0 ? outboundBody : undefined,
         signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
       });
       latencyMs = elapsedMs(fetchStartedAt);
@@ -199,6 +201,27 @@ async function attempt(
   }
 
   if (info.isRateLimited) {
+    if (info.outOfCredits) {
+      // Model/beta-scoped credit exhaustion — other models on this account still
+      // work, so fail over without benching the account.
+      logRequest({
+        accountId: account.id,
+        apiKeyId: context.apiKeyId,
+        ts: now,
+        status: upstream.status,
+        model: context.model,
+        outcome: "rate_limited",
+        method: context.method,
+        path: context.path,
+        failoverAttempt: context.failoverAttempt,
+        latencyMs,
+        totalMs: elapsedMs(attemptStartedAt),
+        upstreamRequestId: upstream.headers.get("request-id"),
+        error: "out_of_credits",
+      });
+      await discardBody(upstream);
+      return null;
+    }
     applyCooldown(account, info, settings, Date.now());
     logRequest({
       accountId: account.id,
@@ -326,24 +349,137 @@ interface AttemptContext {
   model: string | null;
   apiKeyId: string | null;
   failoverAttempt: number;
-  allowDeviceIdOverride: boolean;
+  parsedBody: unknown;
+  bodySignals: BodyIdentitySignals;
 }
 
-function hasDeviceIdInBody(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  if (Array.isArray(value)) return value.some((item) => hasDeviceIdInBody(item));
+interface BodyIdentitySignals {
+  hasDeviceId: boolean;
+  hasAccountUuid: boolean;
+}
 
-  for (const [key, nested] of Object.entries(value)) {
-    if (isDeviceIdKey(key) && nested !== null && nested !== undefined && String(nested).trim().length > 0) {
-      return true;
-    }
-    if (hasDeviceIdInBody(nested)) return true;
+function scanBodyIdentity(value: unknown): BodyIdentitySignals {
+  const signals: BodyIdentitySignals = { hasDeviceId: false, hasAccountUuid: false };
+  scanIdentity(value, signals);
+  return signals;
+}
+
+function scanIdentity(value: unknown, signals: BodyIdentitySignals): void {
+  if (Array.isArray(value)) {
+    for (const item of value) scanIdentity(item, signals);
+    return;
   }
-  return false;
+  if (!isRecord(value)) return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (isDeviceIdEntry(key, nested)) {
+      signals.hasDeviceId = true;
+    } else if (isAccountUuidEntry(key, nested)) {
+      signals.hasAccountUuid = true;
+    } else {
+      scanIdentity(parseUserIdJson(key, nested) ?? nested, signals);
+    }
+  }
 }
 
-function isDeviceIdKey(key: string): boolean {
-  return key.replaceAll(/[-_]/g, "").toLowerCase() === "deviceid";
+/** A device-id signal is a deviceid-ish key holding a non-empty primitive; object values are descended into instead. */
+function isDeviceIdEntry(key: string, value: unknown): boolean {
+  if (normalizeIdentityKey(key) !== "deviceid") return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  return typeof value === "number" || typeof value === "boolean";
+}
+
+/** An account-uuid slot is an accountuuid-ish key holding a string; empty strings count so we can fill them. */
+function isAccountUuidEntry(key: string, value: unknown): boolean {
+  return normalizeIdentityKey(key) === "accountuuid" && typeof value === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeIdentityKey(key: string): string {
+  return key.replaceAll(/[-_]/g, "").toLowerCase();
+}
+
+/**
+ * Claude Code packs identity into `metadata.user_id` as a JSON envelope
+ * ({"device_id":…,"account_uuid":…,"session_id":…}). Parse it so identity
+ * scanning/patching reaches inside; returns null when the value isn't that shape.
+ */
+function parseUserIdJson(key: string, value: unknown): Record<string, unknown> | unknown[] | null {
+  if (normalizeIdentityKey(key) !== "userid" || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+interface IdentityPatch {
+  deviceId: string | null;
+  accountUuid: string | null;
+}
+
+/**
+ * Per-attempt outbound body: patch device-id slots to the account's override and
+ * account-uuid slots to the routed account's id — each only where the client
+ * already sent that slot (including inside the metadata.user_id JSON envelope).
+ * The shared bodyBuf stays pristine so failover to other accounts replays the
+ * original.
+ */
+function buildAttemptBody(
+  bodyBuf: ArrayBuffer | null,
+  account: Account,
+  context: AttemptContext,
+): ArrayBuffer | null {
+  const patch: IdentityPatch = {
+    deviceId: account.device_id_override && context.bodySignals.hasDeviceId ? account.device_id_override : null,
+    accountUuid: context.bodySignals.hasAccountUuid ? account.id : null,
+  };
+  if (!bodyBuf || (patch.deviceId === null && patch.accountUuid === null)) return bodyBuf;
+  const patched = structuredClone(context.parsedBody);
+  patchIdentityInPlace(patched, patch);
+  const bytes = new TextEncoder().encode(JSON.stringify(patched));
+  const out = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(out).set(bytes);
+  return out;
+}
+
+/** Returns true when anything was rewritten, so user_id envelopes are only re-serialized on change. */
+function patchIdentityInPlace(value: unknown, patch: IdentityPatch): boolean {
+  if (Array.isArray(value)) {
+    let mutated = false;
+    for (const item of value) mutated = patchIdentityInPlace(item, patch) || mutated;
+    return mutated;
+  }
+  if (!isRecord(value)) return false;
+  let mutated = false;
+  for (const [key, nested] of Object.entries(value)) {
+    if (patch.deviceId !== null && isDeviceIdEntry(key, nested)) {
+      value[key] = patch.deviceId;
+      mutated = true;
+      continue;
+    }
+    if (patch.accountUuid !== null && isAccountUuidEntry(key, nested)) {
+      value[key] = patch.accountUuid;
+      mutated = true;
+      continue;
+    }
+    const embedded = parseUserIdJson(key, nested);
+    if (embedded !== null) {
+      if (patchIdentityInPlace(embedded, patch)) {
+        value[key] = JSON.stringify(embedded);
+        mutated = true;
+      }
+      continue;
+    }
+    mutated = patchIdentityInPlace(nested, patch) || mutated;
+  }
+  return mutated;
 }
 
 interface ProxyAuthResult {
@@ -370,7 +506,7 @@ function captureUsageInBackground(input: UsageCaptureInput): void {
       if (streamLimitError) {
         applyCooldown(
           input.account,
-          { isRateLimited: true, status: streamLimitError, resetTime: null, remaining: null },
+          { isRateLimited: true, status: streamLimitError, resetTime: null, remaining: null, outOfCredits: false },
           input.settings,
           Date.now(),
         );
@@ -483,5 +619,18 @@ function poolExhausted(accounts: Account[], now: number): Response {
     .sort((x, y) => x - y)[0];
   const headers: Record<string, string> = {};
   if (soonest) headers["retry-after"] = String(Math.ceil((soonest - now) / 1000));
-  return Response.json({ error: "pool_exhausted", accounts: details }, { status: 503, headers });
+
+  const reauthNames = details.filter((d) => d.reason === "needs_reauth").map((d) => d.name);
+  const body: { error: string; accounts: typeof details; message?: string } = {
+    error: "pool_exhausted",
+    accounts: details,
+  };
+  if (reauthNames.length > 0) {
+    const port = Number(process.env.PORT ?? 8484);
+    const plural = reauthNames.length > 1;
+    body.message =
+      `Account${plural ? "s" : ""} ${reauthNames.join(", ")} need${plural ? "" : "s"} re-authentication. ` +
+      `Open the dashboard at http://localhost:${port} and use Accounts -> Re-authenticate.`;
+  }
+  return Response.json(body, { status: 503, headers });
 }

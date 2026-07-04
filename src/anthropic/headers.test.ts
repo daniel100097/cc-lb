@@ -39,11 +39,6 @@ describe("Anthropic headers", () => {
     expect(overridden.get(DEVICE_ID_HEADER)).toBe("account-device");
   });
 
-  test("overrides outbound device id when explicitly allowed by caller", () => {
-    const headers = prepareRequestHeaders(new Headers(), "token", "account-device", true);
-    expect(headers.get(DEVICE_ID_HEADER)).toBe("account-device");
-  });
-
   test("sanitizes decompression-sensitive response headers", () => {
     const headers = sanitizeResponseHeaders(
       new Headers({

@@ -5,12 +5,14 @@ export const DEVICE_ID_HEADER = "x-device-id";
 /**
  * Rewrite client request headers for forwarding to Anthropic with our OAuth token.
  * Mirrors better-ccflare's AnthropicProvider.prepareHeaders.
+ *
+ * Device-id override is header-scoped: it only rewrites an x-device-id header the
+ * client already sent. Body device-id patching happens per-attempt in the proxy handler.
  */
 export function prepareRequestHeaders(
   incoming: Headers,
   accessToken: string,
   deviceIdOverride?: string | null,
-  allowDeviceIdOverride = incoming.has(DEVICE_ID_HEADER),
 ): Headers {
   const h = new Headers(incoming);
 
@@ -19,7 +21,7 @@ export function prepareRequestHeaders(
   h.delete("x-api-key");
 
   h.set("authorization", `Bearer ${accessToken}`);
-  if (deviceIdOverride && allowDeviceIdOverride) {
+  if (deviceIdOverride && incoming.has(DEVICE_ID_HEADER)) {
     h.set(DEVICE_ID_HEADER, deviceIdOverride);
   }
 
