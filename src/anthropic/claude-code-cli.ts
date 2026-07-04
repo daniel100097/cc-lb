@@ -129,13 +129,32 @@ function spawnClaudeCodeSetupToken(): Bun.Subprocess<"pipe", "pipe", "pipe"> {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: {
-      ...process.env,
-      TERM: process.env.TERM ?? "xterm-256color",
-      CLAUDE_CODE_NO_FLICKER: "0",
-      CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? "./data/claude",
-    },
+    env: buildClaudeCodeLoginEnv(process.env),
   });
+}
+
+export function buildClaudeCodeLoginEnv(baseEnv: NodeJS.ProcessEnv): Record<string, string> {
+  const localBin = `${process.cwd()}/node_modules/.bin`;
+  return {
+    ...stringEnv(baseEnv),
+    PATH: `${localBin}:${baseEnv.PATH ?? ""}`,
+    TERM: baseEnv.TERM ?? "xterm-256color",
+    CLAUDE_CODE_NO_FLICKER: "0",
+    CLAUDE_CODE_LOGIN_COMMAND: baseEnv.CLAUDE_CODE_LOGIN_COMMAND ?? `${shellQuote(`${localBin}/claude`)} setup-token`,
+    CLAUDE_CONFIG_DIR: baseEnv.CLAUDE_CONFIG_DIR ?? "./data/claude",
+  };
+}
+
+function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 function readProcessOutput(session: LoginSession, stream: ReadableStream<Uint8Array>): void {
