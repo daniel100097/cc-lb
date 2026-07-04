@@ -96,10 +96,14 @@ export async function beginClaudeCodeLogin(now = Date.now()): Promise<ClaudeCode
   startPolling(session);
   await refreshTmuxOutput(session);
 
-  const authUrl = await waitForOutput(session, extractClaudeCodeAuthUrl, LOGIN_URL_TIMEOUT_MS, "Claude Code login URL");
-  session.authUrl = authUrl;
-  session.status = "waiting_for_code";
-  return { sessionId: id, authUrl, ...tmuxSessionInfo(session) };
+  try {
+    const authUrl = await waitForOutput(session, extractClaudeCodeAuthUrl, LOGIN_URL_TIMEOUT_MS, "Claude Code login URL");
+    session.authUrl = authUrl;
+    session.status = "waiting_for_code";
+    return { sessionId: id, authUrl, ...tmuxSessionInfo(session) };
+  } catch (error) {
+    throw new Error(withAttachHint(session, error));
+  }
 }
 
 export async function completeClaudeCodeLogin(sessionId: string, code: string): Promise<ClaudeCodeLoginCompleteResult> {
@@ -117,16 +121,20 @@ export async function completeClaudeCodeLogin(sessionId: string, code: string): 
     return completeSessionWithCredentials(session, existingCredentials);
   }
 
-  await sendTmuxLiteral(session.tmuxName, trimmed);
-  session.status = "waiting_for_credentials";
+  try {
+    await sendTmuxLiteral(session.tmuxName, trimmed);
+    session.status = "waiting_for_credentials";
 
-  const credentials = await waitForOutput(
-    session,
-    (output) => extractCompletedClaudeLogin(session, output),
-    COMPLETE_TIMEOUT_MS,
-    "Claude Code login completion",
-  );
-  return completeSessionWithCredentials(session, credentials);
+    const credentials = await waitForOutput(
+      session,
+      (output) => extractCompletedClaudeLogin(session, output),
+      COMPLETE_TIMEOUT_MS,
+      "Claude Code login completion",
+    );
+    return completeSessionWithCredentials(session, credentials);
+  } catch (error) {
+    throw new Error(withAttachHint(session, error));
+  }
 }
 
 export async function getClaudeCodeLoginStatus(sessionId: string): Promise<ClaudeCodeLoginStatusResult> {
@@ -416,6 +424,10 @@ function cleanupProcess(session: LoginSession): void {
 function outputHint(output: string): string {
   const cleaned = redactClaudeCodeOutput(cleanClaudeCodeOutput(output)).trim().slice(-500);
   return cleaned ? ` Last output: ${cleaned}` : "";
+}
+
+function withAttachHint(session: LoginSession, error: unknown): string {
+  return `${errorMessage(error)} Attach with: ${tmuxSessionInfo(session).tmuxAttachCommand}`;
 }
 
 function stripAnsiSequences(input: string): string {
