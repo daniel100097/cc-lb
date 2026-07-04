@@ -5,6 +5,7 @@ import { getValidAccessToken } from "../anthropic/token-manager";
 import { isStrategyName, selectAccount } from "../balancer/strategies";
 import { isAvailable, toState, type AccountState } from "../balancer/types";
 import { bumpRequestCount, listAccounts, updateAccount, type Account } from "../db/accounts";
+import { validateApiKeySecret, type ApiKey } from "../db/api-keys";
 import { getSettings, type Settings } from "../db/settings";
 import { getSticky, setSticky, touchSticky } from "../db/sticky";
 import { logRequest, updateRequestLogUsage } from "../db/request-log";
@@ -34,6 +35,8 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
 
   const settings = getSettings();
   const now = Date.now();
+  const proxyAuth = authenticateProxyRequest(req, settings, now);
+  if (proxyAuth.response) return proxyAuth.response;
 
   // Buffer body once so it can be replayed across failover attempts.
   const bodyBuf = req.method === "GET" || req.method === "HEAD" ? null : await req.arrayBuffer();
@@ -47,7 +50,11 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
   }
 
   const model = modelFromBody(parsedBody);
-  const accounts = listAccounts();
+  let accounts = listAccounts();
+  if (proxyAuth.apiKey?.account_scope_enabled === 1) {
+    const assigned = new Set(proxyAuth.apiKey.assigned_account_ids);
+    accounts = accounts.filter((account) => assigned.has(account.id));
+  }
   const stickyKey = settings.stickySessions ? deriveStickyKey(req.headers, parsedBody) : null;
   const stickyPinnedId = stickyKey ? getSticky(stickyKey, settings.stickyTtlMs, now) : null;
   const ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
@@ -66,6 +73,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       method: req.method,
       path: `${url.pathname}${url.search}`,
       model,
+      apiKeyId: proxyAuth.apiKey?.id ?? null,
       failoverAttempt,
     });
     if (res === null) {
@@ -108,6 +116,7 @@ async function attempt(
   } catch (error) {
     logRequest({
       accountId: account.id,
+      apiKeyId: context.apiKeyId,
       ts: now,
       status: null,
       model: context.model,
@@ -152,6 +161,7 @@ async function attempt(
   } catch (error) {
     logRequest({
       accountId: account.id,
+      apiKeyId: context.apiKeyId,
       ts: now,
       status: null,
       model: context.model,
@@ -170,6 +180,7 @@ async function attempt(
     account.needs_reauth = 1;
     logRequest({
       accountId: account.id,
+      apiKeyId: context.apiKeyId,
       ts: now,
       status: 401,
       model: context.model,
@@ -189,6 +200,7 @@ async function attempt(
     applyCooldown(account, info, settings, Date.now());
     logRequest({
       accountId: account.id,
+      apiKeyId: context.apiKeyId,
       ts: now,
       status: upstream.status,
       model: context.model,
@@ -209,6 +221,7 @@ async function attempt(
   clearRateLimit(account, Date.now());
   const logId = logRequest({
     accountId: account.id,
+    apiKeyId: context.apiKeyId,
     ts: now,
     status: upstream.status,
     model: context.model,
@@ -309,7 +322,13 @@ interface AttemptContext {
   method: string;
   path: string;
   model: string | null;
+  apiKeyId: string | null;
   failoverAttempt: number;
+}
+
+interface ProxyAuthResult {
+  apiKey: ApiKey | null;
+  response: Response | null;
 }
 
 interface UsageCaptureInput {
@@ -359,6 +378,44 @@ function modelFromBody(body: unknown): string | null {
   if (typeof body !== "object" || body === null || !("model" in body)) return null;
   const model = body.model;
   return typeof model === "string" ? model : null;
+}
+
+function authenticateProxyRequest(
+  req: Request,
+  settings: Settings,
+  now: number,
+): ProxyAuthResult {
+  const bearer = bearerToken(req.headers);
+  if (!bearer) {
+    return settings.apiKeyAuthEnabled
+      ? { apiKey: null, response: proxyAuthError(401, "missing_api_key", "API key required.") }
+      : { apiKey: null, response: null };
+  }
+
+  const validation = validateApiKeySecret(bearer, now);
+  if (!validation.ok) {
+    if (!settings.apiKeyAuthEnabled) return { apiKey: null, response: null };
+    const status = validation.reason === "invalid" ? 401 : 403;
+    return {
+      apiKey: null,
+      response: proxyAuthError(status, `api_key_${validation.reason}`, "API key rejected."),
+    };
+  }
+
+  return { apiKey: validation.apiKey, response: null };
+}
+
+function bearerToken(headers: Headers): string | null {
+  const authorization = headers.get("authorization");
+  if (!authorization) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+  return match?.[1]?.trim() || null;
+}
+
+function proxyAuthError(status: 401 | 403, error: string, message: string): Response {
+  const headers: Record<string, string> = {};
+  if (status === 401) headers["www-authenticate"] = "Bearer";
+  return Response.json({ error, message }, { status, headers });
 }
 
 function elapsedMs(startedAt: number): number {

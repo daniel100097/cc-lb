@@ -117,6 +117,29 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       CREATE INDEX IF NOT EXISTS idx_request_log_outcome_ts ON request_log(outcome, ts);
     `,
   },
+  {
+    id: "005_api_keys",
+    sql: `
+      CREATE TABLE IF NOT EXISTS api_keys (
+        id                    TEXT PRIMARY KEY,
+        name                  TEXT NOT NULL,
+        prefix                TEXT NOT NULL,
+        key_hash              TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'active',
+        expires_at            INTEGER,
+        allowed_models        TEXT,
+        traffic_class         TEXT NOT NULL DEFAULT 'default',
+        account_scope_enabled INTEGER NOT NULL DEFAULT 0,
+        assigned_account_ids  TEXT,
+        created_at            INTEGER NOT NULL,
+        updated_at            INTEGER NOT NULL,
+        last_used_at          INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);
+      CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status);
+    `,
+  },
 ];
 
 function migrate() {
@@ -131,6 +154,14 @@ function migrate() {
   for (const migration of MIGRATIONS) {
     if (!applied.has(migration.id)) tx(migration);
   }
+  ensureColumn("request_log", "api_key_id", "TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_request_log_api_key_ts ON request_log(api_key_id, ts);");
 }
 
 migrate();
+
+function ensureColumn(table: string, column: string, definition: string): void {
+  const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+  if (rows.some((row) => row.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+}

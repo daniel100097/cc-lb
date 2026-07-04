@@ -13,6 +13,22 @@ import {
   type Account,
   type AccountPatch,
 } from "../db/accounts";
+import {
+  createApiKey,
+  deleteApiKey,
+  getApiKey,
+  listApiKeys,
+  regenerateApiKey,
+  updateApiKey,
+  type ApiKey,
+} from "../db/api-keys";
+import {
+  getApiKeyAnalytics,
+  getDashboardAnalytics,
+  listApiKeyUsageSummaries,
+  type AnalyticsRange,
+  type UsageSummary,
+} from "../db/analytics";
 import { db } from "../db/client";
 import { getOAuthSession } from "../db/oauth-sessions";
 import {
@@ -25,6 +41,13 @@ import {
   type RequestLogEntry,
 } from "../db/request-log";
 import { getSettings, patchSettings } from "../db/settings";
+import {
+  deleteFilteredStickySessions,
+  deleteStickySessions,
+  listStickySessions,
+  purgeStaleStickySessions,
+  type StickySessionEntry,
+} from "../db/sticky";
 import { publicProcedure, router } from "./trpc";
 
 const strategySchema = z.enum([
@@ -40,6 +63,7 @@ const settingsPatchSchema = z
     strategy: strategySchema.optional(),
     stickySessions: z.boolean().optional(),
     stickyTtlMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
+    apiKeyAuthEnabled: z.boolean().optional(),
     rateLimitBackoffBaseMs: z.number().int().min(1_000).max(60 * 60 * 1000).optional(),
     rateLimitBackoffMaxMs: z.number().int().min(1_000).max(24 * 60 * 60 * 1000).optional(),
     sessionDurationMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
@@ -86,6 +110,7 @@ const requestFilterSchema = z
     limit: z.number().int().min(1).max(200).optional(),
     offset: z.number().int().min(0).optional(),
     accountId: z.string().min(1).nullable().optional(),
+    apiKeyId: z.string().min(1).nullable().optional(),
     outcome: z.string().min(1).nullable().optional(),
     model: z.string().min(1).nullable().optional(),
     since: z.number().int().nullable().optional(),
@@ -93,6 +118,50 @@ const requestFilterSchema = z
     search: z.string().trim().max(200).nullable().optional(),
   })
   .strict();
+
+const apiKeyStatusSchema = z.enum(["active", "inactive"]);
+
+const apiKeyCreateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    status: apiKeyStatusSchema.optional(),
+    isActive: z.boolean().optional(),
+    expiresAt: z.number().int().nullable().optional(),
+    allowedModels: z.array(z.string().trim().min(1).max(120)).max(100).nullable().optional(),
+    trafficClass: z.string().trim().min(1).max(80).optional(),
+    accountScopeEnabled: z.boolean().optional(),
+    assignedAccountIds: z.array(z.string().min(1)).max(500).optional(),
+  })
+  .strict();
+
+const apiKeyUpdateSchema = apiKeyCreateSchema
+  .partial()
+  .extend({ id: z.string().min(1) })
+  .strict();
+
+const apiKeyIdSchema = z.object({ id: z.string().min(1) }).strict();
+
+const analyticsRangeSchema = z.enum(["1d", "7d", "30d"]);
+type AnalyticsRangeInput = z.infer<typeof analyticsRangeSchema>;
+const analyticsRangeInputSchema = z.object({ range: analyticsRangeSchema.optional() }).strict();
+const apiKeyAnalyticsInputSchema = z
+  .object({ id: z.string().min(1), range: analyticsRangeSchema.optional() })
+  .strict();
+
+const stickyListSchema = z
+  .object({
+    limit: z.number().int().min(1).max(200).optional(),
+    offset: z.number().int().min(0).optional(),
+    accountId: z.string().min(1).nullable().optional(),
+    accountQuery: z.string().trim().max(200).nullable().optional(),
+    search: z.string().trim().max(200).nullable().optional(),
+    stale: z.boolean().nullable().optional(),
+    sortBy: z.enum(["updated_at", "key", "account_name"]).optional(),
+    sortDirection: z.enum(["asc", "desc"]).optional(),
+  })
+  .strict();
+
+const stickyDeleteSelectedSchema = z.object({ keys: z.array(z.string().min(1)).max(1_000) }).strict();
 
 const FIXED_OUTCOMES = [
   "ok",
@@ -221,6 +290,68 @@ export const appRouter = router({
     update: publicProcedure.input(settingsPatchSchema).mutation(({ input }) => patchSettings(input)),
   }),
 
+  apiKeys: router({
+    list: publicProcedure.query(() => {
+      const usageByKey = listApiKeyUsageSummaries();
+      return listApiKeys().map((apiKey) => toPublicApiKey(apiKey, usageByKey[apiKey.id]));
+    }),
+
+    get: publicProcedure.input(apiKeyIdSchema).query(({ input }) => {
+      const apiKey = getApiKey(input.id);
+      if (!apiKey) throw new Error("api key not found");
+      return toPublicApiKey(apiKey, listApiKeyUsageSummaries()[apiKey.id]);
+    }),
+
+    create: publicProcedure.input(apiKeyCreateSchema).mutation(({ input }) => {
+      const created = createApiKey({
+        name: input.name,
+        status: input.status ?? (input.isActive === false ? "inactive" : undefined),
+        expires_at: input.expiresAt ?? null,
+        allowed_models: input.allowedModels ?? null,
+        traffic_class: input.trafficClass,
+        account_scope_enabled: input.accountScopeEnabled ? 1 : 0,
+        assigned_account_ids: input.assignedAccountIds ?? [],
+      });
+      return {
+        apiKey: toPublicApiKey(created.apiKey),
+        plaintextKey: created.plaintextKey,
+      };
+    }),
+
+    update: publicProcedure.input(apiKeyUpdateSchema).mutation(({ input }) => {
+      const updated = updateApiKey(input.id, {
+        name: input.name,
+        status: input.status ?? (input.isActive === undefined ? undefined : input.isActive ? "active" : "inactive"),
+        expires_at: input.expiresAt,
+        allowed_models: input.allowedModels,
+        traffic_class: input.trafficClass,
+        account_scope_enabled:
+          input.accountScopeEnabled === undefined ? undefined : input.accountScopeEnabled ? 1 : 0,
+        assigned_account_ids: input.assignedAccountIds,
+      });
+      if (!updated) throw new Error("api key not found");
+      return toPublicApiKey(updated, listApiKeyUsageSummaries()[updated.id]);
+    }),
+
+    delete: publicProcedure.input(apiKeyIdSchema).mutation(({ input }) => {
+      deleteApiKey(input.id);
+      return { ok: true };
+    }),
+
+    regenerate: publicProcedure.input(apiKeyIdSchema).mutation(({ input }) => {
+      const regenerated = regenerateApiKey(input.id);
+      if (!regenerated) throw new Error("api key not found");
+      return {
+        apiKey: toPublicApiKey(regenerated.apiKey),
+        plaintextKey: regenerated.plaintextKey,
+      };
+    }),
+
+    analytics: publicProcedure.input(apiKeyAnalyticsInputSchema).query(({ input }) =>
+      getApiKeyAnalytics(input.id, analyticsRangeOrDefault(input.range, "7d")),
+    ),
+  }),
+
   requests: router({
     list: publicProcedure.input(requestFilterSchema.optional()).query(({ input }) => {
       const limit = input?.limit ?? 50;
@@ -229,6 +360,7 @@ export const appRouter = router({
         limit,
         offset,
         accountId: input?.accountId ?? null,
+        apiKeyId: input?.apiKeyId ?? null,
         outcome: input?.outcome ?? null,
         model: input?.model ?? null,
         since: input?.since ?? null,
@@ -243,9 +375,79 @@ export const appRouter = router({
     }),
     options: publicProcedure.query(() => ({
       accounts: listAccounts().map((account) => ({ id: account.id, name: account.name })),
+      apiKeys: listApiKeys().map((apiKey) => ({ id: apiKey.id, name: apiKey.name, prefix: apiKey.prefix })),
       models: listRequestModels(),
       outcomes: Array.from(new Set([...FIXED_OUTCOMES, ...listRequestOutcomes()])),
     })),
+  }),
+
+  analytics: router({
+    dashboard: publicProcedure.input(analyticsRangeInputSchema.optional()).query(({ input }) =>
+      getDashboardAnalytics(analyticsRangeOrDefault(input?.range, "1d")),
+    ),
+    overview: publicProcedure.input(analyticsRangeInputSchema.optional()).query(({ input }) =>
+      getDashboardAnalytics(analyticsRangeOrDefault(input?.range, "1d")),
+    ),
+    dashboardRanges: publicProcedure.query(() => ({
+      "1d": getDashboardAnalytics("1d"),
+      "7d": getDashboardAnalytics("7d"),
+      "30d": getDashboardAnalytics("30d"),
+    })),
+    apiKey: publicProcedure.input(apiKeyAnalyticsInputSchema).query(({ input }) =>
+      getApiKeyAnalytics(input.id, analyticsRangeOrDefault(input.range, "7d")),
+    ),
+  }),
+
+  stickySessions: router({
+    list: publicProcedure.input(stickyListSchema.optional()).query(({ input }) => {
+      const settings = getSettings();
+      const page = listStickySessions({
+        limit: input?.limit ?? 50,
+        offset: input?.offset ?? 0,
+        ttlMs: settings.stickyTtlMs,
+        now: Date.now(),
+        accountId: input?.accountId ?? null,
+        accountQuery: input?.accountQuery?.trim() || null,
+        search: input?.search?.trim() || null,
+        stale: input?.stale ?? null,
+        sortBy: input?.sortBy ?? "updated_at",
+        sortDirection: input?.sortDirection ?? "desc",
+      });
+      return {
+        entries: page.entries.map(toPublicStickySession),
+        total: page.total,
+        stalePromptCacheCount: page.stalePromptCacheCount,
+        hasMore: (input?.offset ?? 0) + page.entries.length < page.total,
+      };
+    }),
+
+    deleteSelected: publicProcedure.input(stickyDeleteSelectedSchema).mutation(({ input }) => {
+      const deleted = deleteStickySessions(input.keys);
+      return { deleted, deletedCount: deleted };
+    }),
+
+    deleteFiltered: publicProcedure.input(stickyListSchema.optional()).mutation(({ input }) => {
+      const settings = getSettings();
+      const deleted = deleteFilteredStickySessions({
+        limit: 1,
+        offset: 0,
+        ttlMs: settings.stickyTtlMs,
+        now: Date.now(),
+        accountId: input?.accountId ?? null,
+        accountQuery: input?.accountQuery?.trim() || null,
+        search: input?.search?.trim() || null,
+        stale: input?.stale ?? null,
+        sortBy: input?.sortBy ?? "updated_at",
+        sortDirection: input?.sortDirection ?? "desc",
+      });
+      return { deleted, deletedCount: deleted };
+    }),
+
+    purgeStale: publicProcedure.mutation(() => {
+      const settings = getSettings();
+      const deleted = purgeStaleStickySessions(settings.stickyTtlMs, Date.now());
+      return { deleted, deletedCount: deleted };
+    }),
   }),
 
   stats: publicProcedure.query(() => {
@@ -315,6 +517,8 @@ function toPublicRequestLogEntry(entry: RequestLogEntry) {
     id: entry.id,
     accountId: entry.account_id,
     accountName: entry.account_name,
+    apiKeyId: entry.api_key_id,
+    apiKeyName: entry.api_key_name,
     ts: entry.ts,
     status: entry.status,
     model: entry.model,
@@ -332,4 +536,60 @@ function toPublicRequestLogEntry(entry: RequestLogEntry) {
     cacheCreationTokens: entry.cache_creation_tokens,
     costUsd: entry.cost_usd,
   };
+}
+
+function toPublicApiKey(apiKey: ApiKey, usage = emptyUsageSummary()) {
+  return {
+    id: apiKey.id,
+    name: apiKey.name,
+    prefix: apiKey.prefix,
+    status: apiKey.status,
+    computedStatus: apiKey.computed_status,
+    expiresAt: apiKey.expires_at,
+    allowedModels: apiKey.allowed_models,
+    trafficClass: apiKey.traffic_class,
+    accountScopeEnabled: apiKey.account_scope_enabled === 1,
+    assignedAccountIds: apiKey.assigned_account_ids,
+    createdAt: apiKey.created_at,
+    updatedAt: apiKey.updated_at,
+    lastUsedAt: apiKey.last_used_at,
+    usage: {
+      requestCount: usage.requestCount,
+      tokenTotal: usage.tokenTotal,
+      cachedTokenTotal: usage.cachedTokenTotal,
+      costUsd: usage.costUsd,
+      errorCount: usage.errorCount,
+      errorRate: usage.errorRate,
+      topError: usage.topError,
+    },
+  };
+}
+
+function emptyUsageSummary(): UsageSummary {
+  return {
+    requestCount: 0,
+    tokenTotal: 0,
+    cachedTokenTotal: 0,
+    costUsd: 0,
+    errorCount: 0,
+    errorRate: 0,
+    topError: null,
+  };
+}
+
+function toPublicStickySession(entry: StickySessionEntry) {
+  return {
+    key: entry.key,
+    kind: entry.kind,
+    accountId: entry.account_id,
+    accountName: entry.account_name,
+    updatedAt: entry.updated_at,
+    expiresAt: entry.expires_at,
+    ageMs: entry.age_ms,
+    stale: entry.stale,
+  };
+}
+
+function analyticsRangeOrDefault(value: AnalyticsRangeInput | undefined, fallback: AnalyticsRange): AnalyticsRange {
+  return value ?? fallback;
 }

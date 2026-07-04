@@ -1,10 +1,11 @@
 import type { SQL } from "drizzle-orm";
 import { and, count, desc, eq, gte, isNotNull, like, lt, lte, ne, or } from "drizzle-orm";
-import { accounts, requestLog } from "./schema";
+import { accounts, apiKeys, requestLog } from "./schema";
 import { orm } from "./client";
 
 export interface RequestLogInput {
   accountId: string | null;
+  apiKeyId?: string | null;
   ts: number;
   status: number | null;
   model?: string | null;
@@ -39,6 +40,7 @@ export interface RequestLogUsagePatch {
 export interface RecentRequestLog {
   id: number;
   account_id: string | null;
+  api_key_id: string | null;
   ts: number;
   status: number | null;
   model: string | null;
@@ -54,6 +56,8 @@ export interface RequestLogEntry {
   id: number;
   account_id: string | null;
   account_name: string | null;
+  api_key_id: string | null;
+  api_key_name: string | null;
   ts: number;
   status: number | null;
   model: string | null;
@@ -76,6 +80,7 @@ export interface RequestLogFilter {
   limit: number;
   offset: number;
   accountId?: string | null;
+  apiKeyId?: string | null;
   outcome?: string | null;
   model?: string | null;
   since?: number | null;
@@ -93,6 +98,7 @@ export function logRequest(input: RequestLogInput): number {
     .insert(requestLog)
     .values({
       accountId: input.accountId,
+      apiKeyId: input.apiKeyId ?? null,
       ts: input.ts,
       status: input.status,
       model: input.model ?? null,
@@ -145,6 +151,7 @@ export function listRecentRequests(limit: number): RecentRequestLog[] {
     .select({
       id: requestLog.id,
       account_id: requestLog.accountId,
+      api_key_id: requestLog.apiKeyId,
       ts: requestLog.ts,
       status: requestLog.status,
       model: requestLog.model,
@@ -182,6 +189,7 @@ export function listRequests(filter: RequestLogFilter): RequestLogPage {
         .select(selectFields)
         .from(requestLog)
         .leftJoin(accounts, eq(accounts.id, requestLog.accountId))
+        .leftJoin(apiKeys, eq(apiKeys.id, requestLog.apiKeyId))
         .where(where)
         .orderBy(desc(requestLog.ts), desc(requestLog.id))
         .limit(filter.limit)
@@ -191,6 +199,7 @@ export function listRequests(filter: RequestLogFilter): RequestLogPage {
         .select(selectFields)
         .from(requestLog)
         .leftJoin(accounts, eq(accounts.id, requestLog.accountId))
+        .leftJoin(apiKeys, eq(apiKeys.id, requestLog.apiKeyId))
         .orderBy(desc(requestLog.ts), desc(requestLog.id))
         .limit(filter.limit)
         .offset(filter.offset)
@@ -242,6 +251,8 @@ function requestSelectFields() {
     id: requestLog.id,
     accountId: requestLog.accountId,
     accountName: accounts.name,
+    apiKeyId: requestLog.apiKeyId,
+    apiKeyName: apiKeys.name,
     ts: requestLog.ts,
     status: requestLog.status,
     model: requestLog.model,
@@ -266,6 +277,8 @@ function toRequestLogEntry(row: RequestRow): RequestLogEntry {
     id: row.id,
     account_id: row.accountId,
     account_name: row.accountName,
+    api_key_id: row.apiKeyId,
+    api_key_name: row.apiKeyName,
     ts: row.ts,
     status: row.status,
     model: row.model,
@@ -289,6 +302,8 @@ interface RequestRow {
   id: number;
   accountId: string | null;
   accountName: string | null;
+  apiKeyId: string | null;
+  apiKeyName: string | null;
   ts: number;
   status: number | null;
   model: string | null;
@@ -311,6 +326,7 @@ function buildWhere(filter: RequestLogFilter): SQL | undefined {
   const conditions: SQL[] = [];
 
   if (filter.accountId) conditions.push(eq(requestLog.accountId, filter.accountId));
+  if (filter.apiKeyId) conditions.push(eq(requestLog.apiKeyId, filter.apiKeyId));
   if (filter.outcome) conditions.push(eq(requestLog.outcome, filter.outcome));
   if (filter.model) conditions.push(eq(requestLog.model, filter.model));
   if (filter.since !== null && filter.since !== undefined) conditions.push(gte(requestLog.ts, filter.since));

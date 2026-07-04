@@ -9,7 +9,6 @@ process.env.DB_PATH = dbPath;
 
 const { createAccount } = await import("./accounts");
 const {
-  countRequestsSince,
   listRequestModels,
   listRequestOutcomes,
   listRequests,
@@ -32,7 +31,7 @@ describe("request log repository", () => {
       expires_at: Date.now() + 60_000,
       refresh_token_issued_at: Date.now(),
     });
-    const now = Date.now() + 3_600_000;
+    const now = 10_000_000_000_000 + process.pid;
     const id = logRequest({
       accountId: account.id,
       ts: now,
@@ -75,7 +74,8 @@ describe("request log repository", () => {
     const searched = listRequests({ limit: 10, offset: 0, search: "db-request-log-unique" });
     expect(searched.total).toBe(1);
     expect(searched.entries[0]?.outcome).toBe("network_error");
-    expect(countRequestsSince(now - 10_000)).toBe(2);
+    const matchingRecent = listRequests({ limit: 10, offset: 0, since: now - 10_000, until: now + 1 });
+    expect(matchingRecent.total).toBe(2);
     expect(listRequestModels()).toContain("claude-sonnet-4");
     expect(listRequestOutcomes()).toContain("ok");
   });

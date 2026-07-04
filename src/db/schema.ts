@@ -1,4 +1,4 @@
-import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const accounts = sqliteTable("accounts", {
   id: text("id").primaryKey(),
@@ -35,11 +35,36 @@ export const stickySessions = sqliteTable("sticky_sessions", {
   updatedAt: integer("updated_at").notNull(),
 });
 
+export const apiKeys = sqliteTable(
+  "api_keys",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    prefix: text("prefix").notNull(),
+    keyHash: text("key_hash").notNull(),
+    status: text("status").notNull().default("active"),
+    expiresAt: integer("expires_at"),
+    allowedModels: text("allowed_models"),
+    trafficClass: text("traffic_class").notNull().default("default"),
+    accountScopeEnabled: integer("account_scope_enabled").notNull().default(0),
+    assignedAccountIds: text("assigned_account_ids"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    lastUsedAt: integer("last_used_at"),
+  },
+  (table) => [
+    uniqueIndex("idx_api_keys_hash").on(table.keyHash),
+    uniqueIndex("idx_api_keys_prefix").on(table.prefix),
+    index("idx_api_keys_status").on(table.status),
+  ],
+);
+
 export const requestLog = sqliteTable(
   "request_log",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     accountId: text("account_id"),
+    apiKeyId: text("api_key_id"),
     ts: integer("ts").notNull(),
     status: integer("status"),
     model: text("model"),
@@ -60,6 +85,7 @@ export const requestLog = sqliteTable(
   (table) => [
     index("idx_request_log_ts").on(table.ts),
     index("idx_request_log_account_ts").on(table.accountId, table.ts),
+    index("idx_request_log_api_key_ts").on(table.apiKeyId, table.ts),
     index("idx_request_log_outcome_ts").on(table.outcome, table.ts),
   ],
 );

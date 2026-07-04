@@ -5,6 +5,7 @@ export interface Settings {
   strategy: string;
   stickySessions: boolean;
   stickyTtlMs: number;
+  apiKeyAuthEnabled: boolean;
   rateLimitBackoffBaseMs: number;
   rateLimitBackoffMaxMs: number;
   sessionDurationMs: number;
@@ -15,6 +16,7 @@ export const DEFAULT_SETTINGS: Settings = {
   strategy: "priority",
   stickySessions: true,
   stickyTtlMs: 5 * 60 * 60 * 1000,
+  apiKeyAuthEnabled: false,
   rateLimitBackoffBaseMs: 30_000,
   rateLimitBackoffMaxMs: 5 * 60 * 1000,
   sessionDurationMs: 5 * 60 * 60 * 1000,
@@ -28,6 +30,10 @@ export function getSettings(): Settings {
     stickySessions:
       stored.stickySessions === undefined ? DEFAULT_SETTINGS.stickySessions : stored.stickySessions === "true",
     stickyTtlMs: toStoredNumber(stored.stickyTtlMs, DEFAULT_SETTINGS.stickyTtlMs),
+    apiKeyAuthEnabled:
+      stored.apiKeyAuthEnabled === undefined
+        ? DEFAULT_SETTINGS.apiKeyAuthEnabled
+        : stored.apiKeyAuthEnabled === "true",
     rateLimitBackoffBaseMs: toStoredNumber(
       stored.rateLimitBackoffBaseMs,
       DEFAULT_SETTINGS.rateLimitBackoffBaseMs,
@@ -45,6 +51,7 @@ export function patchSettings(patch: Partial<Settings>): Settings {
   if (patch.strategy !== undefined) upsertSetting("strategy", patch.strategy);
   if (patch.stickySessions !== undefined) upsertSetting("stickySessions", String(patch.stickySessions));
   if (patch.stickyTtlMs !== undefined) upsertSetting("stickyTtlMs", String(patch.stickyTtlMs));
+  if (patch.apiKeyAuthEnabled !== undefined) upsertSetting("apiKeyAuthEnabled", String(patch.apiKeyAuthEnabled));
   if (patch.rateLimitBackoffBaseMs !== undefined) {
     upsertSetting("rateLimitBackoffBaseMs", String(patch.rateLimitBackoffBaseMs));
   }
