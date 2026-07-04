@@ -33,6 +33,7 @@ import {
   ShieldAlert,
   Sun,
   Trash2,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AlertMessage } from "@/components/alert-message";
@@ -393,7 +394,7 @@ function DashboardPage() {
         }
       />
       <AlertMessage message={overview.error && !overview.data ? "Detailed dashboard data is unavailable; showing local account and request fallback data." : null} />
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {dashboardStats.map((stat, index) => (
           <DashboardMetricCard key={stat.label} stat={stat} index={index} />
         ))}
@@ -2300,6 +2301,11 @@ function buildDashboardStats(
   const cachedTotal = usage?.cachedTokenTotal ?? requests.reduce((sum, entry) => sum + (entry.cacheReadTokens ?? 0) + (entry.cacheCreationTokens ?? 0), 0);
   const costTotal = usage?.costUsd ?? requests.reduce((sum, entry) => sum + (entry.costUsd ?? 0), 0);
   const errorRate = usage?.errorRate ?? 0;
+  const cacheReadTokens = usage?.cacheReadTokens ?? requests.reduce((sum, entry) => sum + (entry.cacheReadTokens ?? 0), 0);
+  const cacheCreationTokens = usage?.cacheCreationTokens ?? requests.reduce((sum, entry) => sum + (entry.cacheCreationTokens ?? 0), 0);
+  const inputTokenTotal = usage?.inputTokenTotal ?? requests.reduce((sum, entry) => sum + (entry.inputTokens ?? 0), 0);
+  const cacheDenominator = inputTokenTotal + cacheReadTokens + cacheCreationTokens;
+  const cacheHitRate = usage?.cacheHitRate ?? (cacheDenominator > 0 ? cacheReadTokens / cacheDenominator : 0);
   return [
     {
       label: `Requests (${overview?.range ?? "live"})`,
@@ -2316,6 +2322,14 @@ function buildDashboardStats(
       icon: <Coins />,
       trend: trendValues(trend, "tokenTotal", tokenTotal),
       color: "#8b5cf6",
+    },
+    {
+      label: "Cache Hit Rate",
+      value: `${(cacheHitRate * 100).toFixed(cacheHitRate >= 0.995 ? 0 : 1)}%`,
+      meta: `Read ${compactNumber(cacheReadTokens)} · Write ${compactNumber(cacheCreationTokens)}`,
+      icon: <Zap />,
+      trend: trendValues(trend, "cacheHitRate", cacheHitRate),
+      color: "#06b6d4",
     },
     {
       label: "Est. API Cost",

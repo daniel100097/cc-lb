@@ -8,6 +8,11 @@ export interface UsageSummary {
   requestCount: number;
   tokenTotal: number;
   cachedTokenTotal: number;
+  inputTokenTotal: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  /** cache_read / (input + cache_read + cache_creation), 0..1. */
+  cacheHitRate: number;
   costUsd: number;
   errorCount: number;
   errorRate: number;
@@ -72,6 +77,15 @@ const TOKEN_EXPR = "COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)";
 const CACHED_TOKEN_EXPR = "COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)";
 const ERROR_EXPR =
   "(COALESCE(outcome, '') NOT IN ('ok', 'telemetry') OR (status IS NOT NULL AND status >= 400))";
+const USAGE_SUM_COLUMNS = `
+  COALESCE(SUM(${TOKEN_EXPR}), 0) AS tokenTotal,
+  COALESCE(SUM(${CACHED_TOKEN_EXPR}), 0) AS cachedTokenTotal,
+  COALESCE(SUM(COALESCE(input_tokens, 0)), 0) AS inputTokenTotal,
+  COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0) AS cacheReadTokens,
+  COALESCE(SUM(COALESCE(cache_creation_tokens, 0)), 0) AS cacheCreationTokens,
+  COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS costUsd,
+  COALESCE(SUM(CASE WHEN ${ERROR_EXPR} THEN 1 ELSE 0 END), 0) AS errorCount
+`;
 
 export function getDashboardAnalytics(range: AnalyticsRange, now = Date.now()): DashboardAnalytics {
   const { since, until, bucketMs } = rangeWindow(range, now);
@@ -122,10 +136,7 @@ export function listApiKeyUsageSummaries(
       SELECT
         api_key_id AS apiKeyId,
         COUNT(*) AS requestCount,
-        COALESCE(SUM(${TOKEN_EXPR}), 0) AS tokenTotal,
-        COALESCE(SUM(${CACHED_TOKEN_EXPR}), 0) AS cachedTokenTotal,
-        COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS costUsd,
-        COALESCE(SUM(CASE WHEN ${ERROR_EXPR} THEN 1 ELSE 0 END), 0) AS errorCount
+        ${USAGE_SUM_COLUMNS}
       FROM request_log
       WHERE ts >= ? AND ts <= ? AND api_key_id IS NOT NULL
       GROUP BY api_key_id
@@ -136,10 +147,7 @@ export function listApiKeyUsageSummaries(
   for (const row of rows) {
     result[row.apiKeyId] = withDerivedSummary({
       requestCount: toNumber(row.requestCount),
-      tokenTotal: toNumber(row.tokenTotal),
-      cachedTokenTotal: toNumber(row.cachedTokenTotal),
-      costUsd: toNumber(row.costUsd),
-      errorCount: toNumber(row.errorCount),
+      ...usageSumsFromRow(row),
       topError: getTopError(since, until, row.apiKeyId),
     });
   }
@@ -152,10 +160,7 @@ function getUsageSummary(since: number, until: number, apiKeyId?: string): Usage
     `
       SELECT
         COUNT(*) AS requestCount,
-        COALESCE(SUM(${TOKEN_EXPR}), 0) AS tokenTotal,
-        COALESCE(SUM(${CACHED_TOKEN_EXPR}), 0) AS cachedTokenTotal,
-        COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS costUsd,
-        COALESCE(SUM(CASE WHEN ${ERROR_EXPR} THEN 1 ELSE 0 END), 0) AS errorCount
+        ${USAGE_SUM_COLUMNS}
       FROM request_log
       WHERE ${clause}
     `,
@@ -163,10 +168,7 @@ function getUsageSummary(since: number, until: number, apiKeyId?: string): Usage
   );
   return withDerivedSummary({
     requestCount: toNumber(row?.requestCount),
-    tokenTotal: toNumber(row?.tokenTotal),
-    cachedTokenTotal: toNumber(row?.cachedTokenTotal),
-    costUsd: toNumber(row?.costUsd),
-    errorCount: toNumber(row?.errorCount),
+    ...usageSumsFromRow(row),
     topError: getTopError(since, until, apiKeyId),
   });
 }
@@ -183,10 +185,7 @@ function getTrendBuckets(
       SELECT
         CAST((ts / ?) AS INTEGER) * ? AS startTs,
         COUNT(*) AS requestCount,
-        COALESCE(SUM(${TOKEN_EXPR}), 0) AS tokenTotal,
-        COALESCE(SUM(${CACHED_TOKEN_EXPR}), 0) AS cachedTokenTotal,
-        COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS costUsd,
-        COALESCE(SUM(CASE WHEN ${ERROR_EXPR} THEN 1 ELSE 0 END), 0) AS errorCount
+        ${USAGE_SUM_COLUMNS}
       FROM request_log
       WHERE ${clause}
       GROUP BY startTs
@@ -204,10 +203,7 @@ function getTrendBuckets(
       withDerivedSummary({
         startTs,
         requestCount: toNumber(row?.requestCount),
-        tokenTotal: toNumber(row?.tokenTotal),
-        cachedTokenTotal: toNumber(row?.cachedTokenTotal),
-        costUsd: toNumber(row?.costUsd),
-        errorCount: toNumber(row?.errorCount),
+        ...usageSumsFromRow(row),
         topError: null,
       }),
     );
@@ -252,10 +248,7 @@ function getAccountUsageSummaries(
         request_log.account_id AS accountId,
         accounts.name AS accountName,
         COUNT(*) AS requestCount,
-        COALESCE(SUM(${TOKEN_EXPR}), 0) AS tokenTotal,
-        COALESCE(SUM(${CACHED_TOKEN_EXPR}), 0) AS cachedTokenTotal,
-        COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS costUsd,
-        COALESCE(SUM(CASE WHEN ${ERROR_EXPR} THEN 1 ELSE 0 END), 0) AS errorCount
+        ${USAGE_SUM_COLUMNS}
       FROM request_log
       LEFT JOIN accounts ON accounts.id = request_log.account_id
       WHERE ${clause}
@@ -287,10 +280,7 @@ function accountUsageFromRow(
   return {
     ...withDerivedSummary({
       requestCount: toNumber(row?.requestCount),
-      tokenTotal: toNumber(row?.tokenTotal),
-      cachedTokenTotal: toNumber(row?.cachedTokenTotal),
-      costUsd: toNumber(row?.costUsd),
-      errorCount: toNumber(row?.errorCount),
+      ...usageSumsFromRow(row),
       topError: null,
     }),
     accountId,
@@ -380,16 +370,29 @@ function timeWhere(
   return { clause: "ts >= ? AND ts <= ?", params: [since, until] };
 }
 
-function withDerivedSummary<T extends Omit<UsageSummary, "errorRate">>(summary: T): T & UsageSummary {
+function usageSumsFromRow(
+  row: UsageSummaryRow | null | undefined,
+): Omit<UsageSummary, "requestCount" | "errorRate" | "cacheHitRate" | "topError"> {
+  return {
+    tokenTotal: toNumber(row?.tokenTotal),
+    cachedTokenTotal: toNumber(row?.cachedTokenTotal),
+    inputTokenTotal: toNumber(row?.inputTokenTotal),
+    cacheReadTokens: toNumber(row?.cacheReadTokens),
+    cacheCreationTokens: toNumber(row?.cacheCreationTokens),
+    costUsd: toNumber(row?.costUsd),
+    errorCount: toNumber(row?.errorCount),
+  };
+}
+
+function withDerivedSummary<T extends Omit<UsageSummary, "errorRate" | "cacheHitRate">>(
+  summary: T,
+): T & UsageSummary {
+  const cacheDenominator =
+    summary.inputTokenTotal + summary.cacheReadTokens + summary.cacheCreationTokens;
   return {
     ...summary,
-    requestCount: summary.requestCount,
-    tokenTotal: summary.tokenTotal,
-    cachedTokenTotal: summary.cachedTokenTotal,
-    costUsd: summary.costUsd,
-    errorCount: summary.errorCount,
     errorRate: summary.requestCount > 0 ? summary.errorCount / summary.requestCount : 0,
-    topError: summary.topError,
+    cacheHitRate: cacheDenominator > 0 ? summary.cacheReadTokens / cacheDenominator : 0,
   };
 }
 
@@ -422,6 +425,9 @@ interface UsageSummaryRow {
   requestCount: number;
   tokenTotal: number;
   cachedTokenTotal: number;
+  inputTokenTotal: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
   costUsd: number;
   errorCount: number;
 }
