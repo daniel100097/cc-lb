@@ -14,7 +14,14 @@ import { gatedUsedPercent } from "./usage-gate";
 import { deriveStickyKey } from "./sticky-key";
 import { extractUsageFromBody } from "./usage";
 
+// Non-streaming requests may legitimately generate for minutes before any
+// response bytes, so they keep one long deadline for the whole exchange.
 const PROXY_TIMEOUT_MS = 30 * 60 * 1000;
+// Streaming requests get response headers within seconds; a short header
+// deadline lets a black-holed socket fail over quickly instead of hanging the
+// client, while the total deadline only reaps streams that will never finish.
+const STREAM_HEADER_TIMEOUT_MS = 30 * 1000;
+const STREAM_TOTAL_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const RAW_HTTP_BODY_LIMIT_BYTES = 1024 * 1024;
 
 // Telemetry endpoints Claude Code hits that we answer locally.
@@ -96,9 +103,12 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       failoverAttempt,
       parsedBody,
       bodySignals,
+      wantsStream: isRecord(parsedBody) && parsedBody.stream === true,
       rawRequest,
     });
     if (res === null) {
+      // Client already gone — don't burn the remaining accounts on failover.
+      if (req.signal.aborted) return new Response(null, { status: 499 });
       failoverAttempt += 1;
       continue;
     }
@@ -171,14 +181,27 @@ async function attempt(
   let latencyMs = 0;
   let overloadRetries = 0;
   try {
+    const headerTimeoutMs = context.wantsStream ? STREAM_HEADER_TIMEOUT_MS : PROXY_TIMEOUT_MS;
+    const totalTimeoutMs = context.wantsStream ? STREAM_TOTAL_TIMEOUT_MS : PROXY_TIMEOUT_MS;
     while (true) {
       const fetchStartedAt = performance.now();
-      upstream = await fetch(target, {
-        method: req.method,
-        headers,
-        body: outboundBody && outboundBody.byteLength > 0 ? outboundBody : undefined,
-        signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
-      });
+      // The header deadline is cleared once upstream responds so it never cuts
+      // the body; req.signal propagates client disconnects upstream.
+      const headerAbort = new AbortController();
+      const headerTimer = setTimeout(
+        () => headerAbort.abort(new DOMException(`upstream headers not received within ${headerTimeoutMs}ms`, "TimeoutError")),
+        headerTimeoutMs,
+      );
+      try {
+        upstream = await fetch(target, {
+          method: req.method,
+          headers,
+          body: outboundBody && outboundBody.byteLength > 0 ? outboundBody : undefined,
+          signal: AbortSignal.any([req.signal, headerAbort.signal, AbortSignal.timeout(totalTimeoutMs)]),
+        });
+      } finally {
+        clearTimeout(headerTimer);
+      }
       latencyMs = elapsedMs(fetchStartedAt);
       info = parseRateLimit(upstream, Date.now());
       recordMetadata(account, info);
@@ -198,7 +221,7 @@ async function attempt(
       ts: now,
       status: null,
       model: context.model,
-      outcome: "network_error",
+      outcome: req.signal.aborted ? "client_abort" : "network_error",
       method: context.method,
       path: context.path,
       failoverAttempt: context.failoverAttempt,
@@ -427,6 +450,7 @@ interface AttemptContext {
   failoverAttempt: number;
   parsedBody: unknown;
   bodySignals: BodyIdentitySignals;
+  wantsStream: boolean;
   rawRequest: RawRequestSnapshot | null;
 }
 
@@ -445,6 +469,11 @@ interface BodyIdentitySignals {
   hasAccountUuid: boolean;
 }
 
+// Conversation-content subtrees are never scanned or patched: identity slots
+// don't live there, but the same key names can appear in replayed tool_use
+// payloads, and rewriting those would corrupt history the model already emitted.
+const IDENTITY_SKIP_KEYS = new Set(["messages", "system", "tools"]);
+
 function scanBodyIdentity(value: unknown): BodyIdentitySignals {
   const signals: BodyIdentitySignals = { hasDeviceId: false, hasAccountUuid: false };
   scanIdentity(value, signals);
@@ -458,6 +487,7 @@ function scanIdentity(value: unknown, signals: BodyIdentitySignals): void {
   }
   if (!isRecord(value)) return;
   for (const [key, nested] of Object.entries(value)) {
+    if (IDENTITY_SKIP_KEYS.has(key)) continue;
     if (isDeviceIdEntry(key, nested)) {
       signals.hasDeviceId = true;
     } else if (isAccountUuidEntry(key, nested)) {
@@ -549,6 +579,7 @@ function patchIdentityInPlace(value: unknown, patch: IdentityPatch): boolean {
   if (!isRecord(value)) return false;
   let mutated = false;
   for (const [key, nested] of Object.entries(value)) {
+    if (IDENTITY_SKIP_KEYS.has(key)) continue;
     if (patch.deviceId !== null && isDeviceIdEntry(key, nested)) {
       value[key] = patch.deviceId;
       mutated = true;
