@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "timezone": "Etc/UTC",
+  "labels": ["dependencies"],
+  "includePaths": [
+    "package.json",
+    "bun.lock",
+    "Dockerfile",
+    "docker-compose.yml",
+    ".github/workflows/**"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 7am on monday"]
+  },
+  "packageRules": [
+    {
+      "description": "Group GitHub Actions updates together",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Group Docker image updates together",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "groupName": "docker"
+    },
+    {
+      "description": "Do not update this app's own image references in local Compose examples",
+      "matchManagers": ["docker-compose"],
+      "matchPackageNames": ["ghcr.io/daniel100097/cc-lb"],
+      "enabled": false
+    }
+  ]
+}
