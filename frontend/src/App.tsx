@@ -33,6 +33,7 @@ import {
   ShieldAlert,
   Sun,
   Trash2,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AlertMessage } from "@/components/alert-message";
@@ -40,7 +41,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { DonutChart } from "@/components/donut-chart";
 import { EmptyState } from "@/components/empty-state";
-import { MiniQuotaBar } from "@/components/mini-quota-bar";
+import { MiniQuotaBar, QuotaWindowMeter } from "@/components/mini-quota-bar";
 import { SparklineChart } from "@/components/sparkline-chart";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -67,7 +68,7 @@ import { Label } from "@/components/ui/label";
 import { Toaster } from "@/components/ui/sonner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { compactNumber, currency, durationMs, latencyMs, relativeTime } from "@/lib/format";
+import { compactNumber, currency, durationMs, latencyMs, relativeTime, resetCountdown } from "@/lib/format";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -393,7 +394,7 @@ function DashboardPage() {
         }
       />
       <AlertMessage message={overview.error && !overview.data ? "Detailed dashboard data is unavailable; showing local account and request fallback data." : null} />
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {dashboardStats.map((stat, index) => (
           <DashboardMetricCard key={stat.label} stat={stat} index={index} />
         ))}
@@ -1238,11 +1239,21 @@ function AccountSummaryCards({ accounts }: { accounts: Account[] }) {
             <StatusBadge status={account.status} />
           </div>
           <div className="mt-4 grid gap-3">
-            <MiniQuotaBar remaining={account.rateLimitRemaining} />
-            <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="grid grid-cols-2 gap-4">
+              <QuotaWindowMeter
+                label="5h"
+                percentRemaining={quotaRemainingPercent(account)}
+                resetAt={account.rateLimit5hReset ?? account.rateLimitReset}
+              />
+              <QuotaWindowMeter
+                label="Weekly"
+                percentRemaining={weeklyRemainingPercent(account)}
+                resetAt={weeklyResetAt(account)}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
               <MiniMetric label="Priority" value={String(account.priority)} />
               <MiniMetric label="Requests" value={compactNumber(account.requestCount)} />
-              <MiniMetric label="Reset" value={relativeTime(account.rateLimitReset)} />
             </div>
           </div>
         </div>
@@ -1327,7 +1338,7 @@ function ApiKeyListItem({ apiKey, selected, onSelect }: { apiKey: ApiKey; select
         <Badge variant={apiKeyIsActive(apiKey) ? "default" : "secondary"}>{labelFromKey(apiKeyStatus(apiKey))}</Badge>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <MiniQuotaBar remaining={null} />
+        <MiniQuotaBar percentRemaining={null} />
         <div className="text-right text-xs text-muted-foreground">{currency(usage.totalCostUsd ?? usage.costUsd ?? 0)}</div>
       </div>
     </button>
@@ -1818,6 +1829,7 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     .map((entry) => entry.resetsRaw)
     .filter((raw): raw is string => Boolean(raw))
     .join(" · ");
+  const weeklyReset = resetCountdown(weeklyResetAt(account));
 
   async function togglePause() {
     await updateAccount.mutateAsync({ id: account.id, paused: !account.paused });
@@ -1858,7 +1870,7 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
       <td className="px-2 py-3">{account.priority}</td>
       <td className="px-2 py-3">{compactNumber(account.requestCount)}</td>
       <td className="px-2 py-3">
-        <MiniQuotaBar remaining={account.rateLimitRemaining} />
+        <MiniQuotaBar percentRemaining={quotaRemainingPercent(account)} />
       </td>
       <td className="px-2 py-3">{relativeTime(account.rateLimitReset)}</td>
       <td className="px-2 py-3">
@@ -1866,7 +1878,10 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
           <span className="text-muted-foreground">—</span>
         ) : (
           <div className="flex flex-col leading-tight" title={usageResetTitle || undefined}>
-            <span className="font-semibold">{formatUsagePercent(weekUsage?.usedPercent)}</span>
+            <span className="font-semibold">
+              {formatUsagePercent(weekUsage?.usedPercent)}
+              {weeklyReset ? <span className="text-muted-foreground text-xs font-normal"> · resets {weeklyReset}</span> : null}
+            </span>
             <span className="text-muted-foreground text-xs">{formatUsagePercent(sessionUsage?.usedPercent)} session</span>
           </div>
         )}
@@ -2101,6 +2116,7 @@ function SettingsForm({
 }) {
   const [form, setForm] = useState<SettingsFormState>(() => settingsToFormState(settings));
   const utils = trpc.useUtils();
+  const installedUserAgent = trpc.settings.installedUserAgent.useQuery();
   const updateSettings = trpc.settings.update.useMutation({
     onSuccess: async (next) => {
       setForm(settingsToFormState(next));
@@ -2209,18 +2225,46 @@ function SettingsForm({
         helper="% used of the 5h or weekly window — accounts at or above receive no new sticky sessions"
       />
       <div className="grid gap-2 rounded-lg border p-3 lg:col-span-2">
-        <Label htmlFor="user-agent-override">User-Agent override</Label>
+        <div className="flex items-center justify-between gap-3">
+          <Label htmlFor="user-agent-override">User-Agent override</Label>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!installedUserAgent.data?.userAgent}
+            onClick={() =>
+              setForm((current) => ({ ...current, userAgentOverride: installedUserAgent.data?.userAgent ?? "" }))
+            }
+          >
+            Use installed version
+          </Button>
+        </div>
         <Input
           id="user-agent-override"
           value={form.userAgentOverride ?? ""}
           onChange={(event) => setForm((current) => ({ ...current, userAgentOverride: event.target.value }))}
-          placeholder="claude-cli/2.0.14 (external, cli)"
+          placeholder={installedUserAgent.data?.userAgent ?? "claude-cli/2.1.198 (external, cli)"}
         />
         <span className="text-muted-foreground text-xs">
-          Sent upstream instead of the client&apos;s User-Agent — set to the installed Claude Code version so Anthropic
-          sees a consistent client. Leave empty to pass the client value through.
+          Sent upstream instead of the client&apos;s User-Agent. Enter <code>auto</code> to always track the gateway&apos;s
+          bundled Claude Code version
+          {installedUserAgent.data?.userAgent ? ` (currently ${installedUserAgent.data.userAgent})` : ""}. Leave empty to
+          pass the client value through.
         </span>
       </div>
+      <label className="flex items-center justify-between rounded-lg border p-3 lg:col-span-2">
+        <span>
+          <span className="block font-medium">Strip forwarded headers</span>
+          <span className="text-muted-foreground text-sm">
+            Remove Forwarded, X-Forwarded-*, X-Real-IP, Via and similar headers before sending upstream so client and
+            proxy-chain IPs are not exposed to Anthropic.
+          </span>
+        </span>
+        <Switch
+          checked={Boolean(form.stripForwardedHeaders)}
+          onCheckedChange={(checked) => setForm((current) => ({ ...current, stripForwardedHeaders: checked }))}
+        />
+      </label>
       <div className="flex justify-end lg:col-span-2">
         <Button type="submit" disabled={updateSettings.isPending}>
           {updateSettings.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
@@ -2271,6 +2315,11 @@ function buildDashboardStats(
   const cachedTotal = usage?.cachedTokenTotal ?? requests.reduce((sum, entry) => sum + (entry.cacheReadTokens ?? 0) + (entry.cacheCreationTokens ?? 0), 0);
   const costTotal = usage?.costUsd ?? requests.reduce((sum, entry) => sum + (entry.costUsd ?? 0), 0);
   const errorRate = usage?.errorRate ?? 0;
+  const cacheReadTokens = usage?.cacheReadTokens ?? requests.reduce((sum, entry) => sum + (entry.cacheReadTokens ?? 0), 0);
+  const cacheCreationTokens = usage?.cacheCreationTokens ?? requests.reduce((sum, entry) => sum + (entry.cacheCreationTokens ?? 0), 0);
+  const inputTokenTotal = usage?.inputTokenTotal ?? requests.reduce((sum, entry) => sum + (entry.inputTokens ?? 0), 0);
+  const cacheDenominator = inputTokenTotal + cacheReadTokens + cacheCreationTokens;
+  const cacheHitRate = usage?.cacheHitRate ?? (cacheDenominator > 0 ? cacheReadTokens / cacheDenominator : 0);
   return [
     {
       label: `Requests (${overview?.range ?? "live"})`,
@@ -2287,6 +2336,14 @@ function buildDashboardStats(
       icon: <Coins />,
       trend: trendValues(trend, "tokenTotal", tokenTotal),
       color: "#8b5cf6",
+    },
+    {
+      label: "Cache Hit Rate",
+      value: `${(cacheHitRate * 100).toFixed(cacheHitRate >= 0.995 ? 0 : 1)}%`,
+      meta: `Read ${compactNumber(cacheReadTokens)} · Write ${compactNumber(cacheCreationTokens)}`,
+      icon: <Zap />,
+      trend: trendValues(trend, "cacheHitRate", cacheHitRate),
+      color: "#06b6d4",
     },
     {
       label: "Est. API Cost",
@@ -2318,6 +2375,55 @@ function buildDashboardStats(
 function trendValues<T extends Record<string, unknown>>(rows: T[], key: keyof T, fallback: number): { value: number }[] {
   const values = rows.map((row) => numeric(row[key]));
   return values.length > 0 ? values.map((value) => ({ value })) : [{ value: Math.max(0, fallback) }, { value: Math.max(0, fallback) }];
+}
+
+/**
+ * Percent of the representative (5h) window still available. Prefers the
+ * live rate-limit headers, falls back to the /usage probe session window,
+ * then the legacy remaining count; null renders as "Unknown".
+ */
+function quotaRemainingPercent(account: Account): number | null {
+  const headerUtilization = account.rateLimit5hUtilization;
+  const headerFresh =
+    headerUtilization !== null &&
+    headerUtilization !== undefined &&
+    (account.rateLimit5hReset === null || account.rateLimit5hReset === undefined || account.rateLimit5hReset > Date.now());
+  if (headerFresh) return (1 - headerUtilization) * 100;
+  const sessionUsage = account.usage?.find((entry) => entry.kind === "session");
+  if (sessionUsage?.usedPercent !== null && sessionUsage?.usedPercent !== undefined) {
+    return 100 - sessionUsage.usedPercent;
+  }
+  if (account.rateLimitRemaining !== null && account.rateLimitRemaining !== undefined) {
+    return Math.min(100, account.rateLimitRemaining);
+  }
+  return null;
+}
+
+/**
+ * Percent of the weekly (7d) window still available. Mirrors
+ * quotaRemainingPercent: live headers first, then the /usage probe
+ * week_all_models window.
+ */
+function weeklyRemainingPercent(account: Account): number | null {
+  const headerUtilization = account.rateLimit7dUtilization;
+  const headerFresh =
+    headerUtilization !== null &&
+    headerUtilization !== undefined &&
+    (account.rateLimit7dReset === null || account.rateLimit7dReset === undefined || account.rateLimit7dReset > Date.now());
+  if (headerFresh) return (1 - headerUtilization) * 100;
+  const weekUsage = account.usage?.find((entry) => entry.kind === "week_all_models");
+  if (weekUsage?.usedPercent !== null && weekUsage?.usedPercent !== undefined) {
+    return 100 - weekUsage.usedPercent;
+  }
+  return null;
+}
+
+function weeklyResetAt(account: Account): number | null {
+  if (account.rateLimit7dReset !== null && account.rateLimit7dReset !== undefined && account.rateLimit7dReset > Date.now()) {
+    return account.rateLimit7dReset;
+  }
+  const weekUsage = account.usage?.find((entry) => entry.kind === "week_all_models");
+  return weekUsage?.resetsAtMs ?? null;
 }
 
 function buildDashboardDonut(

@@ -6,6 +6,7 @@ import {
   deleteAccountConfigDir,
   readCredentialsFile,
 } from "../anthropic/account-config";
+import { installedClaudeUserAgent } from "../anthropic/claude-version";
 import { probeAccount, probeTmuxSessionName } from "../anthropic/account-probe";
 import { killTmuxSession } from "../anthropic/tmux-driver";
 import type { UsageWindow } from "../anthropic/usage-panel";
@@ -76,6 +77,7 @@ const settingsPatchSchema = z
     overloadRetryMax: z.number().int().min(0).max(10).optional(),
     newSessionUsageCutoffPercent: z.number().int().min(1).max(100).optional(),
     userAgentOverride: z.string().trim().max(300).optional(),
+    stripForwardedHeaders: z.boolean().optional(),
   })
   .strict();
 
@@ -248,6 +250,7 @@ export const appRouter = router({
   settings: router({
     get: publicProcedure.query(() => getSettings()),
     update: publicProcedure.input(settingsPatchSchema).mutation(({ input }) => patchSettings(input)),
+    installedUserAgent: publicProcedure.query(() => ({ userAgent: installedClaudeUserAgent() })),
   }),
 
   apiKeys: router({
@@ -467,6 +470,10 @@ function toPublicAccount(account: Account, now = Date.now()) {
     rateLimitStatus: account.rate_limit_status,
     rateLimitReset: account.rate_limit_reset,
     rateLimitRemaining: account.rate_limit_remaining,
+    rateLimit5hUtilization: account.rate_limit_5h_utilization,
+    rateLimit5hReset: account.rate_limit_5h_reset,
+    rateLimit7dUtilization: account.rate_limit_7d_utilization,
+    rateLimit7dReset: account.rate_limit_7d_reset,
     rateLimitedUntil: account.rate_limited_until,
     consecutiveRateLimits: account.consecutive_rate_limits,
     needsReauth: account.needs_reauth === 1 || !hasCredentials,
@@ -548,6 +555,10 @@ function toPublicApiKey(apiKey: ApiKey, usage = emptyUsageSummary()) {
       requestCount: usage.requestCount,
       tokenTotal: usage.tokenTotal,
       cachedTokenTotal: usage.cachedTokenTotal,
+      inputTokenTotal: usage.inputTokenTotal,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheCreationTokens: usage.cacheCreationTokens,
+      cacheHitRate: usage.cacheHitRate,
       costUsd: usage.costUsd,
       errorCount: usage.errorCount,
       errorRate: usage.errorRate,
@@ -561,6 +572,10 @@ function emptyUsageSummary(): UsageSummary {
     requestCount: 0,
     tokenTotal: 0,
     cachedTokenTotal: 0,
+    inputTokenTotal: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    cacheHitRate: 0,
     costUsd: 0,
     errorCount: 0,
     errorRate: 0,

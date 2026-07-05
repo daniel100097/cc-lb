@@ -1,4 +1,5 @@
 import { accountDeviceId, accountRealUuid } from "../anthropic/account-config";
+import { resolveUserAgentOverride } from "../anthropic/claude-version";
 import { API_BASE } from "../anthropic/constants";
 import { prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
 import { getValidAccessToken } from "../anthropic/token-manager";
@@ -170,7 +171,13 @@ async function attempt(
   // upstream sees a device fingerprint consistent with that account; fall back to
   // a manually configured override.
   const deviceIdOverride = accountDeviceId(account.id) ?? account.device_id_override;
-  const headers = prepareRequestHeaders(req.headers, accessToken, deviceIdOverride, settings.userAgentOverride);
+  const headers = prepareRequestHeaders(
+    req.headers,
+    accessToken,
+    deviceIdOverride,
+    resolveUserAgentOverride(settings.userAgentOverride),
+    settings.stripForwardedHeaders,
+  );
   const outboundBody = buildAttemptBody(bodyBuf, account, context, deviceIdOverride);
   const rawUpstreamRequest = context.rawRequest
     ? upstreamRequestSnapshot(req.method, target, headers, outboundBody)
@@ -627,7 +634,15 @@ function captureUsageInBackground(input: UsageCaptureInput): void {
       if (streamLimitError) {
         applyCooldown(
           input.account,
-          { isRateLimited: true, status: streamLimitError, resetTime: null, remaining: null, outOfCredits: false },
+          {
+            isRateLimited: true,
+            status: streamLimitError,
+            resetTime: null,
+            remaining: null,
+            fiveHour: { utilization: null, reset: null },
+            sevenDay: { utilization: null, reset: null },
+            outOfCredits: false,
+          },
           input.settings,
           Date.now(),
         );
