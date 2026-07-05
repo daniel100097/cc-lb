@@ -37,4 +37,24 @@ data: {"error":{"type":"rate_limit_error"}}
     expect(usage.cacheCreationTokens).toBe(7);
     expect(usage.streamLimitError).toBe("rate_limit_error");
   });
+
+  test("ignores limit-error strings inside generated text", () => {
+    const usage = extractUsageFromSse(`event: content_block_delta
+data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"the API returned overloaded_error and rate_limit_error"}}
+
+event: message_delta
+data: {"usage":{"output_tokens":9}}
+
+`);
+    expect(usage.outputTokens).toBe(9);
+    expect(usage.streamLimitError).toBeNull();
+  });
+
+  test("detects overloaded_error from a parsed error event", () => {
+    const usage = extractUsageFromSse(`event: error
+data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
+
+`);
+    expect(usage.streamLimitError).toBe("overloaded_error");
+  });
 });

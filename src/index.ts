@@ -24,7 +24,10 @@ startUsageRefresher();
 
 const server = Bun.serve({
   port: PORT,
-  async fetch(req) {
+  // Bun's default idleTimeout is 10s of socket silence and applies mid-stream,
+  // so quiet gaps in proxied SSE responses would drop the connection without message_stop.
+  idleTimeout: 255,
+  async fetch(req, server) {
     const url = new URL(req.url);
 
     // Liveness
@@ -43,6 +46,9 @@ const server = Bun.serve({
     }
 
     if (url.pathname.startsWith("/v1/") || TELEMETRY_PATHS.has(url.pathname)) {
+      // Upstream streams can stay silent longer than any idleTimeout cap (max 255s);
+      // disable the idle timer entirely for proxied requests.
+      server.timeout(req, 0);
       return handleProxy(req, url);
     }
 

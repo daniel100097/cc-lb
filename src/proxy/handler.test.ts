@@ -610,7 +610,8 @@ describe("handleProxy", () => {
       expect(outboundHeaders[0]?.get(DEVICE_ID_HEADER)).toBe("account-device");
       const sent = decodeBody(outboundBodies[0]);
       expect(sent.metadata.deviceId).toBe("account-device");
-      expect(sent.messages[0].device_id).toBe("account-device");
+      // Conversation content is never patched, even when it carries identity-like keys.
+      expect(sent.messages[0].device_id).toBe("y");
       expect(sent.messages[0].content).toBe("hi");
     } finally {
       restore();
@@ -935,6 +936,54 @@ describe("handleProxy", () => {
       expect(JSON.parse(decodeBody(outboundBodies[1]).metadata.user_id).account_uuid).toBe(second.id);
     } finally {
       restore();
+    }
+  });
+
+  test("stops failover and returns 499 when the client has disconnected", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const first = createAccount({ name: "Abort stop A", priority: 0 });
+    seedAccountCredentials(first.id, {
+      accessToken: "abort-access-a",
+      refreshToken: "abort-refresh-a",
+      expiresAt: now + 3_600_000,
+    });
+    const second = createAccount({ name: "Abort stop B", priority: 1 });
+    seedAccountCredentials(second.id, {
+      accessToken: "abort-access-b",
+      refreshToken: "abort-refresh-b",
+      expiresAt: now + 3_600_000,
+    });
+
+    let fetchCalls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        fetchCalls += 1;
+        if (init?.signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+        return Response.json({ usage: { input_tokens: 1, output_tokens: 2 } });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-client-abort", messages: [] }),
+          signal: controller.signal,
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(499);
+      expect(fetchCalls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 
