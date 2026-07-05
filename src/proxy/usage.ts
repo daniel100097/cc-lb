@@ -84,8 +84,6 @@ export function extractUsageFromSse(text: string): UsageExtractionResult {
 
 function mergeSsePayload(result: UsageExtractionResult, event: string, payload: string): void {
   if (payload === "[DONE]") return;
-  if (payload.includes("rate_limit_error")) result.streamLimitError = "rate_limit_error";
-  if (payload.includes("overloaded_error")) result.streamLimitError = "overloaded_error";
 
   try {
     const parsed = JSON.parse(payload);
