@@ -12,6 +12,18 @@ export function relativeTime(value: number | null | undefined): string {
   return `${days}d ${suffix}`;
 }
 
+export function resetCountdown(value: number | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const deltaMs = value - Date.now();
+  if (deltaMs <= 0) return null;
+  const minutes = Math.ceil(deltaMs / 60_000);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `in ${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return `in ${days}d ${hours % 24}h`;
+}
+
 export function compactNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { notation: "compact" }).format(value);
 }

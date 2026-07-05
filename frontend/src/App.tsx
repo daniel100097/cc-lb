@@ -40,7 +40,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { DonutChart } from "@/components/donut-chart";
 import { EmptyState } from "@/components/empty-state";
-import { MiniQuotaBar } from "@/components/mini-quota-bar";
+import { MiniQuotaBar, QuotaWindowMeter } from "@/components/mini-quota-bar";
 import { SparklineChart } from "@/components/sparkline-chart";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -67,7 +67,7 @@ import { Label } from "@/components/ui/label";
 import { Toaster } from "@/components/ui/sonner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { compactNumber, currency, durationMs, latencyMs, relativeTime } from "@/lib/format";
+import { compactNumber, currency, durationMs, latencyMs, relativeTime, resetCountdown } from "@/lib/format";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -1238,11 +1238,21 @@ function AccountSummaryCards({ accounts }: { accounts: Account[] }) {
             <StatusBadge status={account.status} />
           </div>
           <div className="mt-4 grid gap-3">
-            <MiniQuotaBar percentRemaining={quotaRemainingPercent(account)} />
-            <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="grid grid-cols-2 gap-4">
+              <QuotaWindowMeter
+                label="5h"
+                percentRemaining={quotaRemainingPercent(account)}
+                resetAt={account.rateLimit5hReset ?? account.rateLimitReset}
+              />
+              <QuotaWindowMeter
+                label="Weekly"
+                percentRemaining={weeklyRemainingPercent(account)}
+                resetAt={weeklyResetAt(account)}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-xs">
               <MiniMetric label="Priority" value={String(account.priority)} />
               <MiniMetric label="Requests" value={compactNumber(account.requestCount)} />
-              <MiniMetric label="Reset" value={relativeTime(account.rateLimitReset)} />
             </div>
           </div>
         </div>
@@ -1818,6 +1828,7 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     .map((entry) => entry.resetsRaw)
     .filter((raw): raw is string => Boolean(raw))
     .join(" · ");
+  const weeklyReset = resetCountdown(weeklyResetAt(account));
 
   async function togglePause() {
     await updateAccount.mutateAsync({ id: account.id, paused: !account.paused });
@@ -1866,7 +1877,10 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
           <span className="text-muted-foreground">—</span>
         ) : (
           <div className="flex flex-col leading-tight" title={usageResetTitle || undefined}>
-            <span className="font-semibold">{formatUsagePercent(weekUsage?.usedPercent)}</span>
+            <span className="font-semibold">
+              {formatUsagePercent(weekUsage?.usedPercent)}
+              {weeklyReset ? <span className="text-muted-foreground text-xs font-normal"> · resets {weeklyReset}</span> : null}
+            </span>
             <span className="text-muted-foreground text-xs">{formatUsagePercent(sessionUsage?.usedPercent)} session</span>
           </div>
         )}
@@ -2340,6 +2354,33 @@ function quotaRemainingPercent(account: Account): number | null {
     return Math.min(100, account.rateLimitRemaining);
   }
   return null;
+}
+
+/**
+ * Percent of the weekly (7d) window still available. Mirrors
+ * quotaRemainingPercent: live headers first, then the /usage probe
+ * week_all_models window.
+ */
+function weeklyRemainingPercent(account: Account): number | null {
+  const headerUtilization = account.rateLimit7dUtilization;
+  const headerFresh =
+    headerUtilization !== null &&
+    headerUtilization !== undefined &&
+    (account.rateLimit7dReset === null || account.rateLimit7dReset === undefined || account.rateLimit7dReset > Date.now());
+  if (headerFresh) return (1 - headerUtilization) * 100;
+  const weekUsage = account.usage?.find((entry) => entry.kind === "week_all_models");
+  if (weekUsage?.usedPercent !== null && weekUsage?.usedPercent !== undefined) {
+    return 100 - weekUsage.usedPercent;
+  }
+  return null;
+}
+
+function weeklyResetAt(account: Account): number | null {
+  if (account.rateLimit7dReset !== null && account.rateLimit7dReset !== undefined && account.rateLimit7dReset > Date.now()) {
+    return account.rateLimit7dReset;
+  }
+  const weekUsage = account.usage?.find((entry) => entry.kind === "week_all_models");
+  return weekUsage?.resetsAtMs ?? null;
 }
 
 function buildDashboardDonut(
