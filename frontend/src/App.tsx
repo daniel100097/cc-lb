@@ -33,6 +33,7 @@ import {
   ShieldAlert,
   Sun,
   Trash2,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AlertMessage } from "@/components/alert-message";
@@ -393,7 +394,7 @@ function DashboardPage() {
         }
       />
       <AlertMessage message={overview.error && !overview.data ? "Detailed dashboard data is unavailable; showing local account and request fallback data." : null} />
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         {dashboardStats.map((stat, index) => (
           <DashboardMetricCard key={stat.label} stat={stat} index={index} />
         ))}
@@ -2115,6 +2116,7 @@ function SettingsForm({
 }) {
   const [form, setForm] = useState<SettingsFormState>(() => settingsToFormState(settings));
   const utils = trpc.useUtils();
+  const installedUserAgent = trpc.settings.installedUserAgent.useQuery();
   const updateSettings = trpc.settings.update.useMutation({
     onSuccess: async (next) => {
       setForm(settingsToFormState(next));
@@ -2223,18 +2225,46 @@ function SettingsForm({
         helper="% used of the 5h or weekly window — accounts at or above receive no new sticky sessions"
       />
       <div className="grid gap-2 rounded-lg border p-3 lg:col-span-2">
-        <Label htmlFor="user-agent-override">User-Agent override</Label>
+        <div className="flex items-center justify-between gap-3">
+          <Label htmlFor="user-agent-override">User-Agent override</Label>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!installedUserAgent.data?.userAgent}
+            onClick={() =>
+              setForm((current) => ({ ...current, userAgentOverride: installedUserAgent.data?.userAgent ?? "" }))
+            }
+          >
+            Use installed version
+          </Button>
+        </div>
         <Input
           id="user-agent-override"
           value={form.userAgentOverride ?? ""}
           onChange={(event) => setForm((current) => ({ ...current, userAgentOverride: event.target.value }))}
-          placeholder="claude-cli/2.0.14 (external, cli)"
+          placeholder={installedUserAgent.data?.userAgent ?? "claude-cli/2.1.198 (external, cli)"}
         />
         <span className="text-muted-foreground text-xs">
-          Sent upstream instead of the client&apos;s User-Agent — set to the installed Claude Code version so Anthropic
-          sees a consistent client. Leave empty to pass the client value through.
+          Sent upstream instead of the client&apos;s User-Agent. Enter <code>auto</code> to always track the gateway&apos;s
+          bundled Claude Code version
+          {installedUserAgent.data?.userAgent ? ` (currently ${installedUserAgent.data.userAgent})` : ""}. Leave empty to
+          pass the client value through.
         </span>
       </div>
+      <label className="flex items-center justify-between rounded-lg border p-3 lg:col-span-2">
+        <span>
+          <span className="block font-medium">Strip forwarded headers</span>
+          <span className="text-muted-foreground text-sm">
+            Remove Forwarded, X-Forwarded-*, X-Real-IP, Via and similar headers before sending upstream so client and
+            proxy-chain IPs are not exposed to Anthropic.
+          </span>
+        </span>
+        <Switch
+          checked={Boolean(form.stripForwardedHeaders)}
+          onCheckedChange={(checked) => setForm((current) => ({ ...current, stripForwardedHeaders: checked }))}
+        />
+      </label>
       <div className="flex justify-end lg:col-span-2">
         <Button type="submit" disabled={updateSettings.isPending}>
           {updateSettings.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
@@ -2285,6 +2315,11 @@ function buildDashboardStats(
   const cachedTotal = usage?.cachedTokenTotal ?? requests.reduce((sum, entry) => sum + (entry.cacheReadTokens ?? 0) + (entry.cacheCreationTokens ?? 0), 0);
   const costTotal = usage?.costUsd ?? requests.reduce((sum, entry) => sum + (entry.costUsd ?? 0), 0);
   const errorRate = usage?.errorRate ?? 0;
+  const cacheReadTokens = usage?.cacheReadTokens ?? requests.reduce((sum, entry) => sum + (entry.cacheReadTokens ?? 0), 0);
+  const cacheCreationTokens = usage?.cacheCreationTokens ?? requests.reduce((sum, entry) => sum + (entry.cacheCreationTokens ?? 0), 0);
+  const inputTokenTotal = usage?.inputTokenTotal ?? requests.reduce((sum, entry) => sum + (entry.inputTokens ?? 0), 0);
+  const cacheDenominator = inputTokenTotal + cacheReadTokens + cacheCreationTokens;
+  const cacheHitRate = usage?.cacheHitRate ?? (cacheDenominator > 0 ? cacheReadTokens / cacheDenominator : 0);
   return [
     {
       label: `Requests (${overview?.range ?? "live"})`,
@@ -2301,6 +2336,14 @@ function buildDashboardStats(
       icon: <Coins />,
       trend: trendValues(trend, "tokenTotal", tokenTotal),
       color: "#8b5cf6",
+    },
+    {
+      label: "Cache Hit Rate",
+      value: `${(cacheHitRate * 100).toFixed(cacheHitRate >= 0.995 ? 0 : 1)}%`,
+      meta: `Read ${compactNumber(cacheReadTokens)} · Write ${compactNumber(cacheCreationTokens)}`,
+      icon: <Zap />,
+      trend: trendValues(trend, "cacheHitRate", cacheHitRate),
+      color: "#06b6d4",
     },
     {
       label: "Est. API Cost",

@@ -73,6 +73,11 @@ describe("analytics repository", () => {
     expect(dashboard.overview.requestCount).toBe(3);
     expect(dashboard.overview.tokenTotal).toBe(32);
     expect(dashboard.overview.cachedTokenTotal).toBe(5);
+    expect(dashboard.overview.inputTokenTotal).toBe(18);
+    expect(dashboard.overview.cacheReadTokens).toBe(3);
+    expect(dashboard.overview.cacheCreationTokens).toBe(2);
+    // 3 cache-read / (18 input + 3 read + 2 creation)
+    expect(dashboard.overview.cacheHitRate).toBeCloseTo(3 / 23);
     expect(dashboard.overview.costUsd).toBeCloseTo(0.06);
     expect(dashboard.overview.errorCount).toBe(1);
     expect(dashboard.overview.topError).toEqual({ label: "boom", count: 1 });

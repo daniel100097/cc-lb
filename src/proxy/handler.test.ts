@@ -412,6 +412,48 @@ describe("handleProxy", () => {
     }
   });
 
+  test("strips forwarded headers from the upstream request when enabled", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "Strip forwarded" });
+    seedAccountCredentials(account.id, {
+      accessToken: "strip-access",
+      refreshToken: "strip-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    patchSettings({ stripForwardedHeaders: true });
+
+    const { headers: outboundHeaders, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-forwarded-for": "203.0.113.7",
+            "x-real-ip": "203.0.113.7",
+            via: "1.1 nginx",
+          },
+          body: JSON.stringify({ model: "claude-strip-forwarded", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(outboundHeaders[0]?.get("x-forwarded-for")).toBeNull();
+      expect(outboundHeaders[0]?.get("x-real-ip")).toBeNull();
+      expect(outboundHeaders[0]?.get("via")).toBeNull();
+    } finally {
+      patchSettings({ stripForwardedHeaders: false });
+      restore();
+    }
+  });
+
   test("does not add account device override to requests without a device id signal", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
