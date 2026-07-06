@@ -8,6 +8,9 @@ dist
 
 # built frontend SPA (served by Bun)
 public
+!frontend/public/
+frontend/public/*
+!frontend/public/favicon.svg
 
 # SQLite data + secret store (plaintext OAuth tokens)
 data
