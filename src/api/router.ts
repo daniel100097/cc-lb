@@ -69,6 +69,7 @@ const settingsPatchSchema = z
     strategy: strategySchema.optional(),
     stickySessions: z.boolean().optional(),
     stickyTtlMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
+    stickySwitchOnError: z.boolean().optional(),
     apiKeyAuthEnabled: z.boolean().optional(),
     rawHttpLoggingEnabled: z.boolean().optional(),
     rateLimitBackoffBaseMs: z.number().int().min(1_000).max(60 * 60 * 1000).optional(),

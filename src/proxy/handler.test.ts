@@ -110,6 +110,69 @@ describe("handleProxy", () => {
     }
   });
 
+  test("failover keeps the sticky session on its home account when switch-on-error is off", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const home = createAccount({
+      name: "Stay Home",
+      priority: 0,
+    });
+    seedAccountCredentials(home.id, {
+      accessToken: "stay-home-access",
+      refreshToken: "stay-home-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const fallback = createAccount({
+      name: "Stay Fallback",
+      priority: 1,
+    });
+    seedAccountCredentials(fallback.id, {
+      accessToken: "stay-fallback-access",
+      refreshToken: "stay-fallback-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    updateAccount(home.id, { rate_limited_until: now + 60_000 });
+    setSticky("sid:session-stay", home.id, now - 30_000);
+    patchSettings({ stickySwitchOnError: false });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = Object.assign(
+      async () =>
+        Response.json(
+          { usage: { input_tokens: 1, output_tokens: 2 } },
+          { headers: { "content-type": "application/json" } },
+        ),
+      { preconnect: globalThis.fetch.preconnect },
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-cc-session-id": "session-stay",
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({ model: "claude-handler-stay", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // Served by the fallback, but the pin stays home and its TTL is refreshed.
+      const logs = listRequests({ limit: 10, offset: 0, search: "claude-handler-stay" });
+      expect(logs.entries[0]?.account_id).toBe(fallback.id);
+      expect(getSticky("sid:session-stay", 25_000, Date.now())).toBe(home.id);
+    } finally {
+      globalThis.fetch = originalFetch;
+      patchSettings({ stickySwitchOnError: true });
+    }
+  });
+
   test("new sticky sessions skip accounts at or above the usage cutoff", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {

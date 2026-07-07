@@ -5,6 +5,8 @@ export interface Settings {
   strategy: string;
   stickySessions: boolean;
   stickyTtlMs: number;
+  /** Re-pin a sticky session to the failover account that served it; off keeps the pin on its original account. */
+  stickySwitchOnError: boolean;
   apiKeyAuthEnabled: boolean;
   rawHttpLoggingEnabled: boolean;
   rateLimitBackoffBaseMs: number;
@@ -23,6 +25,7 @@ export const DEFAULT_SETTINGS: Settings = {
   strategy: "priority",
   stickySessions: true,
   stickyTtlMs: 5 * 60 * 60 * 1000,
+  stickySwitchOnError: true,
   apiKeyAuthEnabled: false,
   rawHttpLoggingEnabled: false,
   rateLimitBackoffBaseMs: 30_000,
@@ -41,6 +44,10 @@ export function getSettings(): Settings {
     stickySessions:
       stored.stickySessions === undefined ? DEFAULT_SETTINGS.stickySessions : stored.stickySessions === "true",
     stickyTtlMs: toStoredNumber(stored.stickyTtlMs, DEFAULT_SETTINGS.stickyTtlMs),
+    stickySwitchOnError:
+      stored.stickySwitchOnError === undefined
+        ? DEFAULT_SETTINGS.stickySwitchOnError
+        : stored.stickySwitchOnError === "true",
     apiKeyAuthEnabled:
       stored.apiKeyAuthEnabled === undefined
         ? DEFAULT_SETTINGS.apiKeyAuthEnabled
@@ -75,6 +82,9 @@ export function patchSettings(patch: Partial<Settings>): Settings {
   if (patch.strategy !== undefined) upsertSetting("strategy", patch.strategy);
   if (patch.stickySessions !== undefined) upsertSetting("stickySessions", String(patch.stickySessions));
   if (patch.stickyTtlMs !== undefined) upsertSetting("stickyTtlMs", String(patch.stickyTtlMs));
+  if (patch.stickySwitchOnError !== undefined) {
+    upsertSetting("stickySwitchOnError", String(patch.stickySwitchOnError));
+  }
   if (patch.apiKeyAuthEnabled !== undefined) upsertSetting("apiKeyAuthEnabled", String(patch.apiKeyAuthEnabled));
   if (patch.rawHttpLoggingEnabled !== undefined) {
     upsertSetting("rawHttpLoggingEnabled", String(patch.rawHttpLoggingEnabled));

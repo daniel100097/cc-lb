@@ -116,9 +116,11 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
 
     // Success — pin new sticky sessions; when a session was served by a
     // different account than its pin (home rate-limited or otherwise skipped),
-    // move the session to the account that actually served it.
+    // move the session to the account that actually served it — unless
+    // stickySwitchOnError is off, in which case the pin stays on the home
+    // account (kept alive so the session returns there once it recovers).
     if (stickyKey) {
-      if (stickyPinnedId === account.id) {
+      if (stickyPinnedId === account.id || (stickyPinnedId !== null && !settings.stickySwitchOnError)) {
         touchSticky(stickyKey, Date.now());
       } else {
         setSticky(stickyKey, account.id, Date.now());
