@@ -76,6 +76,31 @@ describe("appRouter accounts", () => {
     expect(stats.needsReauthAccounts).toBe(1);
   });
 
+  test("resetRateLimit clears cooldown state", async () => {
+    const now = Date.now();
+    const account = createAccount({ name: "Reset limited" });
+    seedAccountCredentials(account.id, {
+      accessToken: "access-reset",
+      refreshToken: "refresh-reset",
+      expiresAt: now + 3_600_000,
+    });
+    updateAccount(account.id, {
+      rate_limited_until: now + 300_000,
+      rate_limit_status: "rate_limited",
+      rate_limit_remaining: 0,
+      rate_limit_reset: now + 300_000,
+      consecutive_rate_limits: 3,
+    });
+
+    const reset = await caller.accounts.resetRateLimit({ id: account.id });
+    expect(reset.status).toBe("active");
+    expect(reset.rateLimitedUntil).toBeNull();
+    expect(reset.rateLimitStatus).toBeNull();
+    expect(reset.rateLimitRemaining).toBeNull();
+    expect(reset.rateLimitReset).toBeNull();
+    expect(reset.consecutiveRateLimits).toBe(0);
+  });
+
   test("update toggles pause state and pause reason", async () => {
     const account = createAccount({ name: "Pause me" });
     seedAccountCredentials(account.id, { accessToken: "access-c", refreshToken: "refresh-c" });

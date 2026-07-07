@@ -240,6 +240,20 @@ export const appRouter = router({
       return toPublicAccount(account);
     }),
 
+    resetRateLimit: publicProcedure.input(z.object({ id: z.string().min(1) }).strict()).mutation(({ input }) => {
+      if (!getAccount(input.id)) throw new Error("account not found");
+      updateAccount(input.id, {
+        rate_limited_until: null,
+        rate_limit_status: null,
+        rate_limit_reset: null,
+        rate_limit_remaining: null,
+        consecutive_rate_limits: 0,
+      });
+      const account = getAccount(input.id);
+      if (!account) throw new Error("account not found");
+      return toPublicAccount(account);
+    }),
+
     delete: publicProcedure.input(z.object({ id: z.string().min(1) }).strict()).mutation(({ input }) => {
       void killTmuxSession(probeTmuxSessionName(input.id)).catch(() => {});
       deleteAccountConfigDir(input.id);

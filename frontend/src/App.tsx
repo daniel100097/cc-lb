@@ -1814,6 +1814,14 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
       await utils.stats.invalidate();
     },
   });
+  const resetRateLimit = trpc.accounts.resetRateLimit.useMutation({
+    onSuccess: async () => {
+      await utils.accounts.list.invalidate();
+      await utils.stats.invalidate();
+      toast.success("Rate limit reset");
+    },
+    onError: (error) => toast.error(error.message || "Failed to reset rate limit"),
+  });
   const deleteAccount = trpc.accounts.delete.useMutation({
     onSuccess: async () => {
       await utils.accounts.list.invalidate();
@@ -1848,6 +1856,10 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     if (nextDeviceId === null) return;
     await updateAccount.mutateAsync({ id: account.id, deviceIdOverride: nextDeviceId.trim() || null });
     toast.success(nextDeviceId.trim() ? "Device ID override saved" : "Device ID override cleared");
+  }
+
+  function clearRateLimit() {
+    resetRateLimit.mutate({ id: account.id });
   }
 
   async function remove() {
@@ -1898,6 +1910,18 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
           <Button type="button" variant="ghost" size="icon" onClick={editDeviceId} title="Device ID override">
             <Code2 className="size-4" />
           </Button>
+          {account.status === "rate_limited" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={clearRateLimit}
+              title="Reset rate limit"
+              disabled={resetRateLimit.isPending}
+            >
+              {resetRateLimit.isPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            </Button>
+          ) : null}
           <UsageProbeButton account={account} />
           <Button type="button" variant="ghost" size="icon" onClick={remove} title="Delete">
             <Trash2 className="size-4" />
