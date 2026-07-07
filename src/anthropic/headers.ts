@@ -34,8 +34,7 @@ export function prepareRequestHeaders(
 ): Headers {
   const h = new Headers(incoming);
 
-  // Strip client credentials — we inject our own.
-  h.delete("authorization");
+  // Strip the client's key credential; authorization is overwritten below.
   h.delete("x-api-key");
 
   if (stripForwardedHeaders) {
@@ -64,6 +63,7 @@ export function prepareRequestHeaders(
   // Hop-by-hop / host.
   h.delete("host");
   h.delete("content-length"); // recomputed by fetch from the body
+  h.set("connection", "close");
 
   return h;
 }

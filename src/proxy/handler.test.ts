@@ -442,6 +442,40 @@ describe("handleProxy", () => {
     }
   });
 
+  test("disables upstream TCP connection reuse", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "No keepalive" });
+    seedAccountCredentials(account.id, {
+      accessToken: "no-keepalive-access",
+      refreshToken: "no-keepalive-refresh",
+      expiresAt: now + 3_600_000,
+    });
+
+    const { headers: outboundHeaders, inits, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", connection: "keep-alive" },
+          body: JSON.stringify({ model: "claude-no-keepalive", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(inits[0]?.keepalive).toBe(false);
+      expect(outboundHeaders[0]?.get("connection")).toBe("close");
+    } finally {
+      restore();
+    }
+  });
+
   test("passes the client user-agent upstream when no override is set", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
@@ -727,6 +761,87 @@ describe("handleProxy", () => {
       expect(outboundBodies.length).toBe(2);
       expect(decodeBody(outboundBodies[0]).device_id).toBe("device-a");
       expect(decodeBody(outboundBodies[1]).device_id).toBe("client-device");
+    } finally {
+      restore();
+    }
+  });
+
+  test("forwards the client's exact body bytes when identity already matches", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const acct = createAccount({
+      name: "Identity noop",
+      device_id_override: "account-device",
+    });
+    seedAccountCredentials(acct.id, {
+      accessToken: "identity-noop-access",
+      refreshToken: "identity-noop-refresh",
+      expiresAt: now + 3_600_000,
+    });
+
+    const { bodies: outboundBodies, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    // Odd spacing and a trailing-zero float would not survive JSON re-serialization.
+    const rawBody =
+      `{ "model": "claude-noop-identity",  "messages": [],\n` +
+      `  "temperature": 1.0, "device_id": "account-device", "account_uuid": "${acct.id}" }`;
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: rawBody,
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(new TextDecoder().decode(outboundBodies[0] as ArrayBuffer)).toBe(rawBody);
+    } finally {
+      restore();
+    }
+  });
+
+  test("keeps the metadata.user_id envelope string untouched when its identity already matches", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const acct = createAccount({
+      name: "Envelope noop",
+      device_id_override: "account-device",
+    });
+    seedAccountCredentials(acct.id, {
+      accessToken: "envelope-noop-access",
+      refreshToken: "envelope-noop-refresh",
+      expiresAt: now + 3_600_000,
+    });
+
+    const { bodies: outboundBodies, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    // Envelope formatted with spaces: any rewrite would compact it.
+    const userId = `{ "device_id": "account-device", "account_uuid": "${acct.id}", "session_id": "sess-noop" }`;
+    const rawBody = JSON.stringify({ model: "claude-noop-envelope", messages: [], metadata: { user_id: userId } });
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: rawBody,
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(new TextDecoder().decode(outboundBodies[0] as ArrayBuffer)).toBe(rawBody);
     } finally {
       restore();
     }
@@ -1183,9 +1298,11 @@ function sessionUsageWindows(usedPercent: number, resetsAtMs: number | null): st
 function captureFetch(respond: () => Response) {
   const headers: Headers[] = [];
   const bodies: (BodyInit | null | undefined)[] = [];
+  const inits: RequestInit[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = Object.assign(
     async (_input: RequestInfo | URL, init?: RequestInit) => {
+      inits.push(init ?? {});
       headers.push(new Headers(init?.headers));
       bodies.push(init?.body);
       return respond();
@@ -1195,6 +1312,7 @@ function captureFetch(respond: () => Response) {
   return {
     headers,
     bodies,
+    inits,
     restore: () => {
       globalThis.fetch = originalFetch;
     },

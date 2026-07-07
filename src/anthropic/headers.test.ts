@@ -9,6 +9,7 @@ describe("Anthropic headers", () => {
         authorization: "Bearer client",
         "x-api-key": "client-key",
         host: "localhost",
+        connection: "keep-alive",
         "anthropic-beta": "feature-a",
       }),
       "server-token",
@@ -17,6 +18,7 @@ describe("Anthropic headers", () => {
     expect(headers.get("authorization")).toBe("Bearer server-token");
     expect(headers.get("x-api-key")).toBeNull();
     expect(headers.get("host")).toBeNull();
+    expect(headers.get("connection")).toBe("close");
     expect(headers.get("anthropic-beta")).toContain("feature-a");
     expect(headers.get("anthropic-beta")).toContain(OAUTH_BETA_HEADER);
   });

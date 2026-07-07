@@ -207,6 +207,7 @@ async function attempt(
           headers,
           body: outboundBody && outboundBody.byteLength > 0 ? outboundBody : undefined,
           signal: AbortSignal.any([req.signal, headerAbort.signal, AbortSignal.timeout(totalTimeoutMs)]),
+          keepalive: false,
         });
       } finally {
         clearTimeout(headerTimer);
@@ -572,13 +573,21 @@ function buildAttemptBody(
   if (!bodyBuf || (patch.deviceId === null && patch.accountUuid === null)) return bodyBuf;
   const patched = structuredClone(context.parsedBody);
   patchIdentityInPlace(patched, patch);
-  const bytes = new TextEncoder().encode(JSON.stringify(patched));
+  const rewritten = JSON.stringify(patched);
+  // Identity already matches the routed account: forward the client's exact bytes.
+  // Re-serializing would silently change whitespace and number formatting.
+  if (rewritten === JSON.stringify(context.parsedBody)) return bodyBuf;
+  const bytes = new TextEncoder().encode(rewritten);
   const out = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(out).set(bytes);
   return out;
 }
 
-/** Returns true when anything was rewritten, so user_id envelopes are only re-serialized on change. */
+/**
+ * Returns true when anything was rewritten, so user_id envelopes are only
+ * re-serialized on change. Slots whose value already equals the patch are left
+ * untouched, keeping the client's original serialization intact.
+ */
 function patchIdentityInPlace(value: unknown, patch: IdentityPatch): boolean {
   if (Array.isArray(value)) {
     let mutated = false;
@@ -590,13 +599,17 @@ function patchIdentityInPlace(value: unknown, patch: IdentityPatch): boolean {
   for (const [key, nested] of Object.entries(value)) {
     if (IDENTITY_SKIP_KEYS.has(key)) continue;
     if (patch.deviceId !== null && isDeviceIdEntry(key, nested)) {
-      value[key] = patch.deviceId;
-      mutated = true;
+      if (nested !== patch.deviceId) {
+        value[key] = patch.deviceId;
+        mutated = true;
+      }
       continue;
     }
     if (patch.accountUuid !== null && isAccountUuidEntry(key, nested)) {
-      value[key] = patch.accountUuid;
-      mutated = true;
+      if (nested !== patch.accountUuid) {
+        value[key] = patch.accountUuid;
+        mutated = true;
+      }
       continue;
     }
     const embedded = parseUserIdJson(key, nested);
