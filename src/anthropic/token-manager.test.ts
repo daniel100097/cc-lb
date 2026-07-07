@@ -7,7 +7,10 @@ process.env.CLAUDE_ACCOUNTS_DIR = root;
 
 // Mock the probe so no CLI/tmux is spawned; drive its behavior per test.
 const probeAccount = mock(async (_id: string, _trigger: string) => ({ outcome: "refreshed", usage: null }));
-mock.module("./account-probe", () => ({
+// Bare call on purpose: bun applies the mock synchronously, and a top-level
+// await here would suspend this module's evaluation and let other test files
+// interleave. Typed void|Promise<void>, hence the void marker for the linter.
+void mock.module("./account-probe", () => ({
   probeAccount,
   isProbeReauthRequiredError: (error: unknown) => error instanceof Error && error.name === "ProbeReauthRequiredError",
 }));

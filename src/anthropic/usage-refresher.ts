@@ -1,6 +1,6 @@
 // Periodic /usage snapshot refresh. Accounts that served a request recently
 // get a fresh snapshot every ACTIVE_REFRESH_INTERVAL_MS so routing (the
-// new-session usage cutoff) sees near-live 5h-window utilization; idle
+// new-session usage cutoff) sees recent 5h-window utilization; idle
 // accounts refresh only every IDLE_REFRESH_INTERVAL_MS to avoid pointless CLI
 // boots. Probe-level dedup/backoff and the tmux semaphore bound the cost.
 
@@ -8,7 +8,7 @@ import { listAccounts, type Account } from "../db/accounts";
 import { accountHasCredentials } from "./account-config";
 import { probeAccount } from "./account-probe";
 
-export const ACTIVE_REFRESH_INTERVAL_MS = 5 * 60_000;
+export const ACTIVE_REFRESH_INTERVAL_MS = 45 * 60_000;
 export const IDLE_REFRESH_INTERVAL_MS = 3 * 60 * 60_000;
 /** Total jitter band around the base interval (±15%). */
 const USAGE_JITTER_SPREAD = 0.3;

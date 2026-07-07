@@ -53,12 +53,12 @@ function account(overrides: Partial<Account>): Account {
 describe("usageRefreshDue", () => {
   // Jitter keeps the effective interval within [0.85, 1.15) of the base, so
   // boundary fixtures sit outside that band.
-  test("active account refreshes on the jittered 5min interval", () => {
+  test("active account refreshes on the jittered 45min interval", () => {
     const active = { last_used: NOW - 60_000 };
     expect(
       usageRefreshDue(account({ ...active, usage_checked_at: NOW - 1.15 * ACTIVE_REFRESH_INTERVAL_MS }), NOW),
     ).toBe(true);
-    expect(usageRefreshDue(account({ ...active, usage_checked_at: NOW - 2 * 60_000 }), NOW)).toBe(false);
+    expect(usageRefreshDue(account({ ...active, usage_checked_at: NOW - 30 * 60_000 }), NOW)).toBe(false);
   });
 
   test("idle account refreshes on the jittered 3h interval", () => {

@@ -801,7 +801,7 @@ describe("handleProxy", () => {
       );
       expect(response.status).toBe(200);
       await response.text();
-      expect(new TextDecoder().decode(outboundBodies[0] as ArrayBuffer)).toBe(rawBody);
+      expect(decodeBodyText(outboundBodies[0])).toBe(rawBody);
     } finally {
       restore();
     }
@@ -841,7 +841,7 @@ describe("handleProxy", () => {
       );
       expect(response.status).toBe(200);
       await response.text();
-      expect(new TextDecoder().decode(outboundBodies[0] as ArrayBuffer)).toBe(rawBody);
+      expect(decodeBodyText(outboundBodies[0])).toBe(rawBody);
     } finally {
       restore();
     }
@@ -1320,8 +1320,12 @@ function captureFetch(respond: () => Response) {
 }
 
 function decodeBody(body: BodyInit | null | undefined) {
+  return JSON.parse(decodeBodyText(body));
+}
+
+function decodeBodyText(body: BodyInit | null | undefined): string {
   if (!(body instanceof ArrayBuffer) && !(body instanceof Uint8Array)) {
     throw new Error("expected binary outbound body");
   }
-  return JSON.parse(new TextDecoder().decode(body));
+  return new TextDecoder().decode(body);
 }
