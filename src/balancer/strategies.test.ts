@@ -31,6 +31,57 @@ describe("balancer strategies", () => {
     expect(pick?.id).toBe("b");
   });
 
+  test("noisy round robin completes a two-request pair before moving on", () => {
+    const pick = selectAccount(
+      "noisy_round_robin",
+      [state("a", { sessionRequestCount: 1 }), state("b", { sessionRequestCount: 0 })],
+      Date.now(),
+    );
+    expect(pick?.id).toBe("a");
+  });
+
+  test("noisy round robin randomizes tied next-pair candidates", () => {
+    const originalRandom = Math.random;
+    Math.random = function randomMock() {
+      return 0.7;
+    };
+    try {
+      const pick = selectAccount(
+        "noisy_round_robin",
+        [
+          state("a", { sessionRequestCount: 0 }),
+          state("b", { sessionRequestCount: 0 }),
+          state("c", { sessionRequestCount: 0 }),
+        ],
+        Date.now(),
+      );
+      expect(pick?.id).toBe("c");
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+
+  test("noisy round robin lets lower pair counts catch up", () => {
+    const originalRandom = Math.random;
+    Math.random = function randomMock() {
+      return 0.6;
+    };
+    try {
+      const pick = selectAccount(
+        "noisy_round_robin",
+        [
+          state("a", { sessionRequestCount: 2 }),
+          state("b", { sessionRequestCount: 0 }),
+          state("c", { sessionRequestCount: 0 }),
+        ],
+        Date.now(),
+      );
+      expect(pick?.id).toBe("c");
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+
   test("least used chooses lowest session request count", () => {
     const pick = selectAccount("least_used", [state("a", { sessionRequestCount: 5 }), state("b", { sessionRequestCount: 2 })], Date.now());
     expect(pick?.id).toBe("b");
@@ -68,6 +119,7 @@ describe("balancer strategies", () => {
 
   test("returns null for empty pools", () => {
     expect(selectAccount("priority", [], Date.now())).toBeNull();
+    expect(selectAccount("noisy_round_robin", [], Date.now())).toBeNull();
     expect(selectAccount("weighted_random", [], Date.now())).toBeNull();
   });
 
@@ -80,6 +132,7 @@ describe("balancer strategies", () => {
 
   test("strategy guard recognizes configured names", () => {
     expect(isStrategyName("priority")).toBe(true);
+    expect(isStrategyName("noisy_round_robin")).toBe(true);
     expect(isStrategyName("bad")).toBe(false);
   });
 });

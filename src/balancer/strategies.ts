@@ -17,12 +17,48 @@ function minBy<T>(items: T[], compare: (a: T, b: T) => number): T | null {
   return best;
 }
 
+function minGroupBy<T>(items: T[], compare: (a: T, b: T) => number): T[] {
+  const first = items[0];
+  if (first === undefined) return [];
+  let best = first;
+  let group = [first];
+  for (let i = 1; i < items.length; i++) {
+    const item = items[i];
+    if (item === undefined) continue;
+    const result = compare(item, best);
+    if (result < 0) {
+      best = item;
+      group = [item];
+    } else if (result === 0) {
+      group.push(item);
+    }
+  }
+  return group;
+}
+
 function compareNumber(a: number, b: number): number {
   return a === b ? 0 : a < b ? -1 : 1;
 }
 
 function compareId(a: AccountState, b: AccountState): number {
   return a.id.localeCompare(b.id);
+}
+
+function randomItem<T>(items: T[]): T | null {
+  if (items.length === 0) return null;
+  return items[Math.floor(Math.random() * items.length)] ?? null;
+}
+
+function noisyRoundRobinPairCount(account: AccountState): number {
+  return Math.floor(account.sessionRequestCount / 2);
+}
+
+function compareNoisyRoundRobinBucket(a: AccountState, b: AccountState): number {
+  return (
+    compareNumber(noisyRoundRobinPairCount(a), noisyRoundRobinPairCount(b)) ||
+    compareNumber(a.sessionRequestCount, b.sessionRequestCount) ||
+    compareNumber(a.requestCount, b.requestCount)
+  );
 }
 
 export const STRATEGIES: Record<StrategyName, Strategy> = {
@@ -41,6 +77,19 @@ export const STRATEGIES: Record<StrategyName, Strategy> = {
     name: "round_robin",
     description: "Least-recently-used account. Spreads load evenly over time.",
     pick: (a) => minBy(a, (x, y) => compareNumber(x.lastUsed ?? 0, y.lastUsed ?? 0) || compareId(x, y)),
+  },
+
+  noisy_round_robin: {
+    name: "noisy_round_robin",
+    description: "Two-request account bursts with randomized tie-breaking. Spreads load without strict alternation.",
+    pick: (a) => {
+      const inProgressPairs = a.filter((account) => account.sessionRequestCount % 2 === 1);
+      const candidates =
+        inProgressPairs.length > 0
+          ? minGroupBy(inProgressPairs, compareNoisyRoundRobinBucket)
+          : minGroupBy(a, compareNoisyRoundRobinBucket);
+      return randomItem(candidates);
+    },
   },
 
   least_used: {

@@ -41,6 +41,7 @@ export function isAvailable(a: AccountState, now: number): boolean {
 export type StrategyName =
   | "priority"
   | "round_robin"
+  | "noisy_round_robin"
   | "least_used"
   | "weighted_random"
   | "session_reset_drain";

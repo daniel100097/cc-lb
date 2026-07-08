@@ -59,6 +59,7 @@ import { publicProcedure, router } from "./trpc";
 const strategySchema = z.enum([
   "priority",
   "round_robin",
+  "noisy_round_robin",
   "least_used",
   "weighted_random",
   "session_reset_drain",
