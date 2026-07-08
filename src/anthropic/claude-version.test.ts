@@ -3,7 +3,9 @@ import { installedClaudeUserAgent, resolveUserAgentOverride } from "./claude-ver
 
 describe("claude-version", () => {
   test("builds the user-agent from the bundled Claude Code package version", () => {
-    expect(installedClaudeUserAgent()).toMatch(/^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/);
+    expect(installedClaudeUserAgent()).toMatch(
+      /^claude-cli\/\d+\.\d+\.\d+ \(external, sdk-ts, agent-sdk\/0\.3\.199\)$/,
+    );
   });
 
   test("resolves the override: empty disables, auto tracks the bundled version, literals pass through", () => {

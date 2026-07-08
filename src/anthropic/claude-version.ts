@@ -4,8 +4,8 @@ let cachedUserAgent: string | null | undefined;
 
 /**
  * User-agent matching the bundled Claude Code CLI (the same package the login
- * flow runs), e.g. "claude-cli/2.1.201 (external, cli)". Null when the package
- * cannot be resolved.
+ * flow runs), e.g. "claude-cli/2.1.199 (external, sdk-ts, agent-sdk/0.3.199)".
+ * Null when the package cannot be resolved.
  */
 export function installedClaudeUserAgent(): string | null {
   if (cachedUserAgent === undefined) cachedUserAgent = readInstalledUserAgent();
@@ -30,7 +30,7 @@ function readInstalledUserAgent(): string | null {
     const parsed: unknown = JSON.parse(readFileSync(pkgPath, "utf8"));
     const version = isRecord(parsed) ? parsed.version : undefined;
     if (typeof version !== "string" || version.length === 0) return null;
-    return `claude-cli/${version} (external, cli)`;
+    return `claude-cli/${version} (external, sdk-ts, agent-sdk/0.3.199)`;
   } catch {
     return null;
   }

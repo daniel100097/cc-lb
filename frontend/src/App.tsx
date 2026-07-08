@@ -2280,7 +2280,7 @@ function SettingsForm({
           id="user-agent-override"
           value={form.userAgentOverride ?? ""}
           onChange={(event) => setForm((current) => ({ ...current, userAgentOverride: event.target.value }))}
-          placeholder={installedUserAgent.data?.userAgent ?? "claude-cli/2.1.198 (external, cli)"}
+          placeholder={installedUserAgent.data?.userAgent ?? "claude-cli/2.1.199 (external, sdk-ts, agent-sdk/0.3.199)"}
         />
         <span className="text-muted-foreground text-xs">
           Sent upstream instead of the client&apos;s User-Agent. Enter <code>auto</code> to always track the gateway&apos;s
