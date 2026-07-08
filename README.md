@@ -20,8 +20,8 @@ store.
 - Token refresh and usage probes driven by `claude` in `tmux`.
 - Automatic failover on expired tokens, unauthorized accounts, network errors,
   overloaded responses, and rate limits.
-- Routing strategies: `priority`, `round_robin`, `least_used`,
-  `weighted_random`, and `session_reset_drain`.
+- Routing strategies: `priority`, `round_robin`, `noisy_round_robin`,
+  `least_used`, `weighted_random`, and `session_reset_drain`.
 - Optional proxy API-key enforcement with account scoping and model filters.
 - Optional dashboard password for the SPA and tRPC API.
 - SQLite persistence with Bun, React, Tailwind, and Docker support.
