@@ -2199,19 +2199,6 @@ function SettingsForm({
         </span>
         <Switch checked={form.stickySessions} onCheckedChange={(checked) => setForm((current) => ({ ...current, stickySessions: checked }))} />
       </label>
-      <label className="flex items-center justify-between rounded-lg border p-3">
-        <span>
-          <span className="block font-medium">Switch session on error</span>
-          <span className="text-muted-foreground text-sm">
-            Move a sticky session to the failover account that served it. Off keeps the session pinned to its original
-            account.
-          </span>
-        </span>
-        <Switch
-          checked={Boolean(form.stickySwitchOnError)}
-          onCheckedChange={(checked) => setForm((current) => ({ ...current, stickySwitchOnError: checked }))}
-        />
-      </label>
       <label className={cn("flex items-center justify-between rounded-lg border p-3", !settingsSupportsApiKeyAuth(settings) && "opacity-60")}>
         <span>
           <span className="block font-medium">API key authentication</span>

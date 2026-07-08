@@ -84,9 +84,12 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
   const stickyKey = settings.stickySessions ? deriveStickyKey(req.headers, parsedBody) : null;
   const bodySignals = scanBodyIdentity(parsedBody);
   const stickyPinnedId = stickyKey ? getSticky(stickyKey, settings.stickyTtlMs, now) : null;
+  const exhaustedAccounts = stickyPinnedId
+    ? accounts.filter((account) => account.id === stickyPinnedId)
+    : accounts;
   const ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
   if (ordered.length === 0) {
-    return poolExhausted(accounts, now);
+    return poolExhausted(exhaustedAccounts, now);
   }
 
   const tried = new Set<string>();
@@ -114,13 +117,9 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       continue;
     }
 
-    // Success — pin new sticky sessions; when a session was served by a
-    // different account than its pin (home rate-limited or otherwise skipped),
-    // move the session to the account that actually served it — unless
-    // stickySwitchOnError is off, in which case the pin stays on the home
-    // account (kept alive so the session returns there once it recovers).
+    // Success — pin new sticky sessions, or refresh the TTL for an existing pin.
     if (stickyKey) {
-      if (stickyPinnedId === account.id || (stickyPinnedId !== null && !settings.stickySwitchOnError)) {
+      if (stickyPinnedId === account.id) {
         touchSticky(stickyKey, Date.now());
       } else {
         setSticky(stickyKey, account.id, Date.now());
@@ -131,7 +130,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
     return res;
   }
 
-  return poolExhausted(accounts, now);
+  return poolExhausted(exhaustedAccounts, now);
 }
 
 /**
@@ -392,15 +391,14 @@ function orderAccounts(
   if (available.length === 0) return [];
 
   const result: Account[] = [];
-  const seen = new Set<string>();
 
-  // Sticky pin first (if the pinned account is available).
+  // An existing sticky pin is hard affinity: the session must not fall through
+  // to any other account. If the pinned account is unavailable, there is no
+  // candidate for this request.
   if (settings.stickySessions && stickyKey && stickyPinnedId) {
-    if (available.some((s) => s.id === stickyPinnedId)) {
-      const account = byId.get(stickyPinnedId);
-      if (account) result.push(account);
-      seen.add(stickyPinnedId);
-    }
+    if (!available.some((s) => s.id === stickyPinnedId)) return [];
+    const account = byId.get(stickyPinnedId);
+    return account ? [account] : [];
   }
 
   // Then strategy order over the remaining available pool. For sticky-keyed
@@ -408,7 +406,7 @@ function orderAccounts(
   // accounts at/above the usage cutoff (5h session or weekly window) go last —
   // used only when no fresher account exists. The pinned account above is
   // exempt: an existing session keeps its home even past the cutoff.
-  const pool = available.filter((s) => !seen.has(s.id));
+  const pool = available;
   const saturated = new Set<string>();
   if (stickyKey) {
     for (const s of pool) {

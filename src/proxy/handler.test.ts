@@ -46,7 +46,7 @@ describe("handleProxy", () => {
     expect(logs.entries[0]?.raw_response_body).toBeNull();
   });
 
-  test("failover moves the sticky session to the account that served it", async () => {
+  test("existing sticky sessions do not fall back when the pinned account is already rate-limited", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -72,15 +72,11 @@ describe("handleProxy", () => {
     updateAccount(home.id, { rate_limited_until: now + 60_000 });
     setSticky("sid:session-abc", home.id, now);
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = Object.assign(
-      async () =>
-        Response.json(
-          { usage: { input_tokens: 1, output_tokens: 2 } },
-          { headers: { "content-type": "application/json", "anthropic-billing-cost": "0.004" } },
-        ),
-      { preconnect: globalThis.fetch.preconnect },
-    );
+    let call = 0;
+    const { restore } = captureFetch(() => {
+      call += 1;
+      return Response.json({ usage: { input_tokens: 1, output_tokens: 2 } });
+    });
 
     try {
       const response = await handleProxy(
@@ -95,57 +91,51 @@ describe("handleProxy", () => {
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
-      expect(response.status).toBe(200);
-      await response.text();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(getSticky("sid:session-abc", 60_000, Date.now())).toBe(fallback.id);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).not.toBeNull();
+      expect(call).toBe(0);
+      expect(getSticky("sid:session-abc", 60_000, Date.now())).toBe(home.id);
+      const body = await response.json();
+      expect(body.accounts).toHaveLength(1);
+      expect(body.accounts[0]?.id).toBe(home.id);
       const logs = listRequests({ limit: 10, offset: 0, search: "claude-handler-unique" });
-      expect(logs.total).toBe(1);
-      expect(logs.entries[0]?.account_id).toBe(fallback.id);
-      expect(logs.entries[0]?.model).toBe("claude-handler-unique");
-      expect(logs.entries[0]?.input_tokens).toBe(1);
-      expect(logs.entries[0]?.cost_usd).toBe(0.004);
+      expect(logs.total).toBe(0);
     } finally {
-      globalThis.fetch = originalFetch;
+      restore();
     }
   });
 
-  test("failover keeps the sticky session on its home account when switch-on-error is off", async () => {
+  test("existing sticky sessions do not fall back after a live rate-limit response", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
     }
     const home = createAccount({
-      name: "Stay Home",
+      name: "Rate stay home",
       priority: 0,
     });
     seedAccountCredentials(home.id, {
-      accessToken: "stay-home-access",
-      refreshToken: "stay-home-refresh",
+      accessToken: "rate-stay-home-access",
+      refreshToken: "rate-stay-home-refresh",
       expiresAt: now + 3_600_000,
     });
     const fallback = createAccount({
-      name: "Stay Fallback",
+      name: "Rate stay fallback",
       priority: 1,
     });
     seedAccountCredentials(fallback.id, {
-      accessToken: "stay-fallback-access",
-      refreshToken: "stay-fallback-refresh",
+      accessToken: "rate-stay-fallback-access",
+      refreshToken: "rate-stay-fallback-refresh",
       expiresAt: now + 3_600_000,
     });
-    updateAccount(home.id, { rate_limited_until: now + 60_000 });
     setSticky("sid:session-stay", home.id, now - 30_000);
-    patchSettings({ stickySwitchOnError: false });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = Object.assign(
-      async () =>
-        Response.json(
-          { usage: { input_tokens: 1, output_tokens: 2 } },
-          { headers: { "content-type": "application/json" } },
-        ),
-      { preconnect: globalThis.fetch.preconnect },
-    );
+    let call = 0;
+    const { restore } = captureFetch(() => {
+      call += 1;
+      if (call === 1) return new Response("limited", { status: 429 });
+      return Response.json({ usage: { input_tokens: 1, output_tokens: 2 } });
+    });
 
     try {
       const response = await handleProxy(
@@ -160,16 +150,17 @@ describe("handleProxy", () => {
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
-      expect(response.status).toBe(200);
-      await response.text();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      // Served by the fallback, but the pin stays home and its TTL is refreshed.
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).not.toBeNull();
+      await response.json();
+      expect(call).toBe(1);
+      expect(getSticky("sid:session-stay", 60_000, Date.now())).toBe(home.id);
+      expect(getAccount(home.id)?.rate_limited_until).not.toBeNull();
       const logs = listRequests({ limit: 10, offset: 0, search: "claude-handler-stay" });
-      expect(logs.entries[0]?.account_id).toBe(fallback.id);
-      expect(getSticky("sid:session-stay", 25_000, Date.now())).toBe(home.id);
+      expect(logs.entries.find((entry) => entry.account_id === home.id)?.outcome).toBe("rate_limited");
+      expect(logs.entries.some((entry) => entry.account_id === fallback.id)).toBe(false);
     } finally {
-      globalThis.fetch = originalFetch;
-      patchSettings({ stickySwitchOnError: true });
+      restore();
     }
   });
 
