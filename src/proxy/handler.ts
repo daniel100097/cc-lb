@@ -217,7 +217,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
 
     const accountUuid = accountRealUuid(account.id);
     if (!accountUuid) return accountIdentityMissing(account);
-    const deviceId = accountDeviceId(account.id) ?? (account.device_id_override?.trim() || null);
+    const deviceId = accountDeviceId(account.id);
     if (hasDeviceIdSignal && !deviceId) return accountDeviceIdentityMissing(account);
 
     const res = await attempt(account, req, url, bodyBuf, settings, {
@@ -1373,7 +1373,7 @@ function accountDeviceIdentityMissing(account: Account): Response {
   return Response.json(
     {
       error: "account_device_identity_missing",
-      message: `Account ${account.name} is missing machineID in its .claude.json file and has no device ID override.`,
+      message: `Account ${account.name} is missing machineID in its .claude.json file.`,
       account: { id: account.id, name: account.name },
     },
     { status: 503 },

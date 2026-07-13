@@ -25,7 +25,6 @@ function account(overrides: Partial<Account>): Account {
     id: "acc-1",
     name: "A",
     auth_type: "oauth_refresh",
-    device_id_override: null,
     created_at: 0,
     last_used: null,
     priority: 0,

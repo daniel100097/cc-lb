@@ -4,7 +4,6 @@ export const accounts = sqliteTable("accounts", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   authType: text("auth_type").notNull().default("oauth_refresh"),
-  deviceIdOverride: text("device_id_override"),
   createdAt: integer("created_at").notNull(),
   lastUsed: integer("last_used"),
   priority: integer("priority").notNull().default(0),

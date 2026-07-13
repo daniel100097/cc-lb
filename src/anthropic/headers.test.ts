@@ -37,8 +37,8 @@ describe("Anthropic headers", () => {
     const stripped = prepareRequestHeaders(new Headers({ [DEVICE_ID_HEADER]: "client-device" }), "token");
     expect(stripped.get(DEVICE_ID_HEADER)).toBeNull();
 
-    const overridden = prepareRequestHeaders(new Headers({ [DEVICE_ID_HEADER]: "client-device" }), "token", "account-device");
-    expect(overridden.get(DEVICE_ID_HEADER)).toBe("account-device");
+    const rewritten = prepareRequestHeaders(new Headers({ [DEVICE_ID_HEADER]: "client-device" }), "token", "account-device");
+    expect(rewritten.get(DEVICE_ID_HEADER)).toBe("account-device");
   });
 
   test("passes the validated client user-agent through unchanged", () => {

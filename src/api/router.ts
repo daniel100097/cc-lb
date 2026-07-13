@@ -82,7 +82,6 @@ const accountPatchSchema = z
     id: z.string().min(1),
     name: z.string().trim().min(1).max(120).optional(),
     priority: z.number().int().min(0).max(10_000).optional(),
-    deviceIdOverride: z.string().trim().max(200).nullable().optional(),
     paused: z.boolean().optional(),
     pauseReason: z.string().trim().max(300).nullable().optional(),
     needsReauth: z.boolean().optional(),
@@ -95,7 +94,6 @@ const claudeCodeLoginCompleteSchema = z
     code: z.string().trim().min(1).max(4_000),
     name: z.string().trim().max(120).optional(),
     priority: z.number().int().min(0).max(10_000).optional(),
-    deviceIdOverride: z.string().trim().max(200).nullable().optional(),
   })
   .strict();
 
@@ -200,7 +198,6 @@ export const appRouter = router({
       const account = createAccount({
         name: input.name?.trim() || "Claude Code account",
         priority: input.priority ?? 0,
-        device_id_override: normalizeOptionalString(input.deviceIdOverride),
       });
       adoptLoginConfigDir(account.id, login.configDir);
       void probeAccount(account.id, "seed").catch(() => {});
@@ -224,7 +221,6 @@ export const appRouter = router({
       const patch: AccountPatch = {};
       if (input.name !== undefined) patch.name = input.name;
       if (input.priority !== undefined) patch.priority = input.priority;
-      if (input.deviceIdOverride !== undefined) patch.device_id_override = normalizeOptionalString(input.deviceIdOverride);
       if (input.paused !== undefined) {
         patch.paused = input.paused ? 1 : 0;
         patch.pause_reason = input.paused ? input.pauseReason ?? "Paused from dashboard" : null;
@@ -459,7 +455,6 @@ function toPublicAccount(account: Account, now = Date.now()) {
     id: account.id,
     name: account.name,
     authType: account.auth_type,
-    deviceIdOverride: account.device_id_override,
     status,
     priority: account.priority,
     requestCount: account.request_count,
@@ -499,11 +494,6 @@ function parseUsageWindows(raw: string | null): UsageWindow[] | null {
 
 function isUsageWindow(value: unknown): value is UsageWindow {
   return typeof value === "object" && value !== null && "kind" in value && "usedPercent" in value;
-}
-
-function normalizeOptionalString(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
 }
 
 function toPublicRequestLogEntry(entry: RequestLogEntry) {

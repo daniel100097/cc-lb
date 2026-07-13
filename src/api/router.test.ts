@@ -119,7 +119,7 @@ describe("appRouter accounts", () => {
     expect(resumed.pauseReason).toBeNull();
   });
 
-  test("adds Claude Code accounts through the CLI login flow and updates device override", async () => {
+  test("adds Claude Code accounts through the CLI login flow", async () => {
     process.env.CLAUDE_CODE_LOGIN_COMMAND =
       "test \"$CLAUDE_CODE_NO_FLICKER\" = '0' || exit 42; printf 'Choose the text style that looks best with your terminal\\n'; read theme; printf 'Select login method:\\n'; read method; printf 'https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router\\nPaste code here if prompted > '; read code; printf '\\nSecurity notes:\\nPress Enter to continue...\\n'; read security; printf '\\nQuick safety check: Is this a project you created or one you trust?\\n1. Yes, I trust this folder\\nEnter to confirm\\n'; read trust; mkdir -p \"$CLAUDE_CONFIG_DIR\"; printf '%s' '{\"claudeAiOauth\":{\"accessToken\":\"access-router\",\"refreshToken\":\"refresh-router\",\"expiresAt\":1800000000000,\"scopes\":[\"user:inference\"]}}' > \"$CLAUDE_CONFIG_DIR/.credentials.json\"; printf '\\nWelcome back Router!\\nTips for getting started\\n'; sleep 30";
 
@@ -134,15 +134,19 @@ describe("appRouter accounts", () => {
       sessionId: login.sessionId,
       code: "router-code",
       name: "Claude Code CLI",
-      deviceIdOverride: "device-a",
     });
     expect(account.authType).toBe("oauth_refresh");
     expect(account.needsReauth).toBe(false);
-    expect(account.deviceIdOverride).toBe("device-a");
     expect(account.status).toBe("active");
+    expect(Object.hasOwn(account, "deviceIdOverride")).toBe(false);
 
-    const updated = await caller.accounts.update({ id: account.id, deviceIdOverride: "" });
-    expect(updated.deviceIdOverride).toBeNull();
+    await expect(
+      caller.accounts.update({
+        id: account.id,
+        // @ts-expect-error Device identity overrides are intentionally not part of the account API.
+        deviceIdOverride: "manual-device",
+      }),
+    ).rejects.toThrow();
   });
 
   test("deleting an account permanently blocks its linked chat sessions", async () => {

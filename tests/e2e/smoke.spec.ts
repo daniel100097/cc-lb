@@ -20,7 +20,6 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await page.getByRole("button", { name: "Add Account" }).click();
     const dialog = page.getByRole("dialog", { name: "Add Claude account" });
     await dialog.getByLabel("Name").fill("CLI E2E");
-    await dialog.getByLabel("Device ID override").fill("device-e2e");
     await dialog.getByRole("button", { name: "Generate login link" }).click();
     await expect(
       dialog.getByText("https://claude.com/cai/oauth/authorize?code=true&client_id=e2e&state=playwright", { exact: true }).first(),
@@ -33,7 +32,6 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await expect(page.getByText("Claude Code account added")).toBeVisible();
     const tokenRow = page.getByRole("row").filter({ hasText: "CLI E2E" });
     await expect(tokenRow).toBeVisible();
-    await expect(tokenRow.getByText("device device-e2e")).toBeVisible();
     await tokenRow.getByTitle("Pause").click();
     await expect(page.getByText("Account paused")).toBeVisible();
     await expect(tokenRow.getByText("Paused")).toBeVisible();

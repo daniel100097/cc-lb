@@ -24,7 +24,6 @@ const MIGRATIONS: { id: string; sql: string }[] = [
         id                      TEXT PRIMARY KEY,
         name                    TEXT NOT NULL,
         auth_type               TEXT NOT NULL DEFAULT 'oauth_refresh',
-        device_id_override      TEXT,
         access_token            TEXT,
         refresh_token           TEXT,
         expires_at              INTEGER,
@@ -188,7 +187,6 @@ function migrate() {
   ensureColumn("request_log", "raw_response_headers", "TEXT");
   ensureColumn("request_log", "raw_response_body", "TEXT");
   ensureColumn("accounts", "auth_type", "TEXT NOT NULL DEFAULT 'oauth_refresh'");
-  ensureColumn("accounts", "device_id_override", "TEXT");
   ensureColumn("accounts", "usage_windows", "TEXT");
   ensureColumn("accounts", "usage_checked_at", "INTEGER");
   ensureColumn("accounts", "rate_limit_5h_utilization", "REAL");
@@ -203,6 +201,7 @@ function migrate() {
   dropColumn("accounts", "expires_at");
   dropColumn("accounts", "refresh_token_issued_at");
   dropColumn("accounts", "scopes");
+  dropColumn("accounts", "device_id_override");
   db.exec("CREATE INDEX IF NOT EXISTS idx_request_log_api_key_ts ON request_log(api_key_id, ts);");
 }
 

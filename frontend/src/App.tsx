@@ -1845,13 +1845,6 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     toast.success("Account renamed");
   }
 
-  async function editDeviceId() {
-    const nextDeviceId = window.prompt("Device ID override", account.deviceIdOverride ?? "");
-    if (nextDeviceId === null) return;
-    await updateAccount.mutateAsync({ id: account.id, deviceIdOverride: nextDeviceId.trim() || null });
-    toast.success(nextDeviceId.trim() ? "Device ID override saved" : "Device ID override cleared");
-  }
-
   function clearRateLimit() {
     resetRateLimit.mutate({ id: account.id });
   }
@@ -1868,7 +1861,6 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
           <span className={cn("font-medium", blurNames && "privacy-blur")}>{account.name}</span>
         </div>
         <div className="text-muted-foreground text-xs">{account.id.slice(0, 8)}</div>
-        {account.deviceIdOverride ? <div className="text-muted-foreground max-w-[220px] truncate text-xs">device {account.deviceIdOverride}</div> : null}
       </td>
       <td className="px-2 py-3">
         <StatusBadge status={account.status} />
@@ -1900,9 +1892,6 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
           </Button>
           <Button type="button" variant="ghost" size="icon" onClick={rename} title="Rename">
             <MoreHorizontal className="size-4" />
-          </Button>
-          <Button type="button" variant="ghost" size="icon" onClick={editDeviceId} title="Device ID override">
-            <Code2 className="size-4" />
           </Button>
           {account.status === "rate_limited" ? (
             <Button
@@ -1956,7 +1945,6 @@ function AddAccountDialog() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [priority, setPriority] = useState(0);
-  const [deviceIdOverride, setDeviceIdOverride] = useState("");
   const [claudeCode, setClaudeCode] = useState("");
   const [claudeCodeSession, setClaudeCodeSession] = useState<{
     authUrl: string;
@@ -1981,7 +1969,6 @@ function AddAccountDialog() {
       setClaudeCodeSession(null);
       setName("");
       setPriority(0);
-      setDeviceIdOverride("");
       toast.success("Claude Code account added");
     },
     onError: (mutationError) => setError(mutationError.message),
@@ -2013,7 +2000,6 @@ function AddAccountDialog() {
       sessionId: claudeCodeSession.sessionId,
       name: name || undefined,
       priority,
-      deviceIdOverride: deviceIdOverride || null,
       code: claudeCode,
     });
   }
@@ -2047,15 +2033,6 @@ function AddAccountDialog() {
             max={10_000}
             value={priority}
             onChange={(event) => setPriority(numberFromInput(event.target.value))}
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="account-device-id">Device ID override</Label>
-          <Input
-            id="account-device-id"
-            value={deviceIdOverride}
-            onChange={(event) => setDeviceIdOverride(event.target.value)}
-            placeholder="Optional device identity override"
           />
         </div>
         <form className="grid gap-4" onSubmit={submitClaudeCodeLogin}>

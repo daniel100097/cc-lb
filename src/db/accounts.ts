@@ -9,7 +9,6 @@ export interface Account {
   id: string;
   name: string;
   auth_type: AccountAuthType;
-  device_id_override: string | null;
   created_at: number;
   last_used: number | null;
   priority: number;
@@ -35,7 +34,6 @@ export interface Account {
 export interface NewAccount {
   name: string;
   auth_type?: AccountAuthType;
-  device_id_override?: string | null;
   priority?: number;
 }
 
@@ -65,7 +63,6 @@ export function createAccount(a: NewAccount): Account {
       id,
       name: a.name,
       authType: a.auth_type ?? "oauth_refresh",
-      deviceIdOverride: a.device_id_override ?? null,
       createdAt: now,
       priority: a.priority ?? 0,
     })
@@ -84,7 +81,6 @@ export function updateAccount(id: string, patch: AccountPatch): void {
 
   add("name", patch.name);
   add("authType", patch.auth_type);
-  add("deviceIdOverride", patch.device_id_override);
   add("createdAt", patch.created_at);
   add("lastUsed", patch.last_used);
   add("priority", patch.priority);
@@ -141,7 +137,6 @@ export function bumpRequestCount(id: string, now: number): void {
 interface AccountUpdateValues {
   name?: string;
   authType?: AccountAuthType;
-  deviceIdOverride?: string | null;
   createdAt?: number;
   lastUsed?: number | null;
   priority?: number;
@@ -169,7 +164,6 @@ function toAccount(row: AccountRow): Account {
     id: row.id,
     name: row.name,
     auth_type: isAccountAuthType(row.authType) ? row.authType : "oauth_refresh",
-    device_id_override: row.deviceIdOverride,
     created_at: row.createdAt,
     last_used: row.lastUsed,
     priority: row.priority,

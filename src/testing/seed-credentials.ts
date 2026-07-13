@@ -15,6 +15,8 @@ export interface SeedCredentialsOptions {
   scopes?: string[];
   /** Real accountUuid fixture; defaults to accountId. Null deliberately omits identity. */
   accountUuid?: string | null;
+  /** Real machineID fixture from .claude.json. Null/undefined deliberately omits it. */
+  machineId?: string | null;
 }
 
 export function seedAccountCredentials(accountId: string, options: SeedCredentialsOptions = {}): void {
@@ -29,7 +31,10 @@ export function seedAccountCredentials(accountId: string, options: SeedCredentia
   };
   writeFileSync(accountCredentialsPath(accountId), JSON.stringify(payload));
   const accountUuid = options.accountUuid === undefined ? accountId : options.accountUuid;
-  if (accountUuid !== null) {
-    writeFileSync(join(accountConfigDir(accountId), ".claude.json"), JSON.stringify({ accountUuid }));
+  const identity: Record<string, string> = {};
+  if (accountUuid !== null) identity.accountUuid = accountUuid;
+  if (options.machineId) identity.machineID = options.machineId;
+  if (Object.keys(identity).length > 0) {
+    writeFileSync(join(accountConfigDir(accountId), ".claude.json"), JSON.stringify(identity));
   }
 }

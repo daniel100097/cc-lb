@@ -19,15 +19,15 @@ export const FORWARDED_HEADERS = [
  * Rewrite client request headers for forwarding to Anthropic with our OAuth token.
  * Mirrors better-ccflare's AnthropicProvider.prepareHeaders.
  *
- * Device-id override is header-scoped: it only rewrites an x-device-id header the
- * client already sent. Body device-id patching happens per-attempt in the proxy handler.
+ * The account's real machineID is header-scoped: it only rewrites an x-device-id
+ * header the client already sent. Body device-id patching happens per-attempt.
  *
  * The validated Claude Code user-agent is forwarded unchanged.
  */
 export function prepareRequestHeaders(
   incoming: Headers,
   accessToken: string,
-  deviceIdOverride?: string | null,
+  accountDeviceId?: string | null,
   stripForwardedHeaders = false,
 ): Headers {
   const h = new Headers(incoming);
@@ -41,7 +41,7 @@ export function prepareRequestHeaders(
 
   h.set("authorization", `Bearer ${accessToken}`);
   if (incoming.has(DEVICE_ID_HEADER)) {
-    if (deviceIdOverride) h.set(DEVICE_ID_HEADER, deviceIdOverride);
+    if (accountDeviceId) h.set(DEVICE_ID_HEADER, accountDeviceId);
     else h.delete(DEVICE_ID_HEADER);
   }
   // Ensure the OAuth beta flag is present.

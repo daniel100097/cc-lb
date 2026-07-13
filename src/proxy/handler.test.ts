@@ -210,12 +210,12 @@ describe("handleProxy", () => {
     const home = createAccount({
       name: "Quota pending home",
       priority: 0,
-      device_id_override: "quota-account-device",
     });
     seedAccountCredentials(home.id, {
       accessToken: "quota-pending-home-access",
       refreshToken: "quota-pending-home-refresh",
       expiresAt: now + 3_600_000,
+      machineId: "quota-account-device",
     });
     const other = createAccount({ name: "Quota pending other", priority: 1 });
     seedAccountCredentials(other.id, {
@@ -546,12 +546,12 @@ describe("handleProxy", () => {
     for (const account of listAccounts()) updateAccount(account.id, { paused: 1 });
     const account = createAccount({
       name: "Durable client device",
-      device_id_override: "durable-account-device",
     });
     seedAccountCredentials(account.id, {
       accessToken: "durable-device-access",
       refreshToken: "durable-device-refresh",
       expiresAt: now + 3_600_000,
+      machineId: "durable-account-device",
     });
     const sessionId = `durable-device-${process.pid}`;
     const requestFor = (deviceId: string, headerDeviceId?: string) => {
@@ -637,12 +637,12 @@ describe("handleProxy", () => {
     for (const account of listAccounts()) updateAccount(account.id, { paused: 1 });
     const account = createAccount({
       name: "Stored device leak",
-      device_id_override: "stored-leak-account-device",
     });
     seedAccountCredentials(account.id, {
       accessToken: "stored-leak-access",
       refreshToken: "stored-leak-refresh",
       expiresAt: now + 3_600_000,
+      machineId: "stored-leak-account-device",
     });
     const sessionId = `stored-device-leak-${process.pid}`;
     const clientDeviceId = "stored-client-device-fingerprint";
@@ -1271,19 +1271,19 @@ describe("handleProxy", () => {
     }
   });
 
-  test("does not add account device override to requests without a device id signal", async () => {
+  test("does not add the account machineID to requests without a device id signal", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
     }
     const acct = createAccount({
-      name: "Device override inactive",
-      device_id_override: "account-device",
+      name: "Folder device inactive",
     });
     seedAccountCredentials(acct.id, {
       accessToken: "device-access-a",
       refreshToken: "device-refresh-a",
       expiresAt: now + 3_600_000,
+      machineId: "account-device",
     });
 
     const outboundHeaders: Headers[] = [];
@@ -1319,13 +1319,13 @@ describe("handleProxy", () => {
       updateAccount(account.id, { paused: 1 });
     }
     const acct = createAccount({
-      name: "Device override active",
-      device_id_override: "account-device",
+      name: "Folder device active",
     });
     seedAccountCredentials(acct.id, {
       accessToken: "device-access-b",
       refreshToken: "device-refresh-b",
       expiresAt: now + 3_600_000,
+      machineId: "account-device",
     });
 
     const sessionId = "off-path-top-level-device";
@@ -1349,19 +1349,19 @@ describe("handleProxy", () => {
     }
   });
 
-  test("overrides the device id header without touching the body", async () => {
+  test("rewrites the device id header from the account folder without touching the body", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
     }
     const acct = createAccount({
-      name: "Device override header only",
-      device_id_override: "account-device",
+      name: "Folder device header only",
     });
     seedAccountCredentials(acct.id, {
       accessToken: "device-access-c",
       refreshToken: "device-refresh-c",
       expiresAt: now + 3_600_000,
+      machineId: "account-device",
     });
 
     const { headers: outboundHeaders, bodies: outboundBodies, restore } = captureFetch(() =>
@@ -1393,13 +1393,13 @@ describe("handleProxy", () => {
       updateAccount(account.id, { paused: 1 });
     }
     const acct = createAccount({
-      name: "Device override both",
-      device_id_override: "account-device",
+      name: "Folder device strict paths",
     });
     seedAccountCredentials(acct.id, {
       accessToken: "device-access-d",
       refreshToken: "device-refresh-d",
       expiresAt: now + 3_600_000,
+      machineId: "account-device",
     });
 
     const sessionId = "off-path-nested-devices";
@@ -1439,12 +1439,12 @@ describe("handleProxy", () => {
     const failoverA = createAccount({
       name: "Failover device A",
       priority: 0,
-      device_id_override: "device-a",
     });
     seedAccountCredentials(failoverA.id, {
       accessToken: "failover-access-a",
       refreshToken: "failover-refresh-a",
       expiresAt: now + 3_600_000,
+      machineId: "device-a",
     });
     const failoverB = createAccount({
       name: "Failover device B",
@@ -1501,12 +1501,12 @@ describe("handleProxy", () => {
     }
     const acct = createAccount({
       name: "Identity noop",
-      device_id_override: "account-device",
     });
     seedAccountCredentials(acct.id, {
       accessToken: "identity-noop-access",
       refreshToken: "identity-noop-refresh",
       expiresAt: now + 3_600_000,
+      machineId: "account-device",
     });
 
     const { bodies: outboundBodies, restore } = captureFetch(() =>
@@ -1542,12 +1542,12 @@ describe("handleProxy", () => {
     }
     const acct = createAccount({
       name: "Envelope noop",
-      device_id_override: "account-device",
     });
     seedAccountCredentials(acct.id, {
       accessToken: "envelope-noop-access",
       refreshToken: "envelope-noop-refresh",
       expiresAt: now + 3_600_000,
+      machineId: "account-device",
     });
 
     const { bodies: outboundBodies, restore } = captureFetch(() =>
@@ -1582,12 +1582,12 @@ describe("handleProxy", () => {
     }
     const account = createAccount({
       name: "Account uuid fill",
-      device_id_override: "4c646496947b2cb162e80ccba59ec0bd84bc1e96b79d73400b036b5fa6973f59",
     });
     seedAccountCredentials(account.id, {
       accessToken: "uuid-access-a",
       refreshToken: "uuid-refresh-a",
       expiresAt: now + 3_600_000,
+      machineId: "4c646496947b2cb162e80ccba59ec0bd84bc1e96b79d73400b036b5fa6973f59",
     });
 
     const userId = JSON.stringify({
@@ -1714,19 +1714,19 @@ describe("handleProxy", () => {
     }
   });
 
-  test("rewrites device_id inside the user_id envelope only when the account has an override", async () => {
+  test("rewrites device_id inside the user_id envelope from the account folder machineID", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
     }
     const account = createAccount({
-      name: "Envelope device override",
-      device_id_override: "account-device",
+      name: "Envelope folder device",
     });
     seedAccountCredentials(account.id, {
       accessToken: "uuid-access-b",
       refreshToken: "uuid-refresh-b",
       expiresAt: now + 3_600_000,
+      machineId: "account-device",
     });
 
     const userId = JSON.stringify({ device_id: "client-device", account_uuid: "old-uuid", session_id: "s-1" });
@@ -1804,12 +1804,12 @@ describe("handleProxy", () => {
     const first = createAccount({
       name: "Uuid failover A",
       priority: 0,
-      device_id_override: "client-device-d",
     });
     seedAccountCredentials(first.id, {
       accessToken: "uuid-failover-a",
       refreshToken: "uuid-failover-ra",
       expiresAt: now + 3_600_000,
+      machineId: "client-device-d",
     });
     const second = createAccount({
       name: "Uuid failover B",

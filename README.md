@@ -139,20 +139,20 @@ is required.
 The proxy synchronizes every identity slot observed in direct Claude Code
 message traffic. The outbound OAuth token and `account_uuid` come from the
 pinned account, `device_id`/`x-device-id` come from that account's `machineID`
-or configured device override, and embedded `session_id` fields are rewritten
-to the validated session header. Identity fields are rewritten only where the
-client sent them, so count-token requests that omit body identity remain the
-same shape as direct traffic. The validated User-Agent is forwarded unchanged.
+in its Claude Code folder, and embedded `session_id` fields are rewritten to the
+validated session header. There is no manual device override or client-device
+fallback. Identity fields are rewritten only where the client sent them, so
+count-token requests that omit body identity remain the same shape as direct
+traffic. The validated User-Agent is forwarded unchanged.
 Body rewrites are limited to the exact `device_id`, `account_uuid`, and
 `session_id` members of the `metadata.user_id` JSON envelope; arbitrary
 lookalike fields are never treated as identity slots.
 
 The pinned account must have a real `accountUuid` in `.claude.json`; if it is
 missing, cc-lb returns `503 account_identity_missing`. A request carrying a
-device ID also requires an account-specific `machineID` or configured device
-override, otherwise it returns `503 account_device_identity_missing`. Both
-checks happen before token or upstream work, and there is no internal-ID or
-client-device fallback.
+device ID also requires an account-specific `machineID` in `.claude.json`,
+otherwise it returns `503 account_device_identity_missing`. Both checks happen
+before token or upstream work, and there is no internal-ID fallback.
 
 Client device identity is accepted only in the `x-device-id` header or the
 exact `device_id` member of the JSON envelope in `metadata.user_id`. The first
