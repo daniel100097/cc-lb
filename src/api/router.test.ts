@@ -239,6 +239,7 @@ describe("appRouter settings", () => {
     expect(updated.rawHttpLoggingEnabled).toBe(true);
     const settings = await caller.settings.get();
     expect(settings.rawHttpLoggingEnabled).toBe(true);
+    expect(settings.proxyPort).toBe(8485);
     await caller.settings.update({ rawHttpLoggingEnabled: false });
   });
 });

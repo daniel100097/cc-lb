@@ -79,8 +79,9 @@ import type { AppRouter } from "../../src/api/router";
 type RouterOutput = inferRouterOutputs<AppRouter>;
 type Account = RouterOutput["accounts"]["list"][number];
 type SettingsValue = RouterOutput["settings"]["get"];
+type SettingsUpdateValue = RouterOutput["settings"]["update"];
 type RequestEntry = RouterOutput["requests"]["list"]["entries"][number];
-type SettingsFormState = SettingsValue & { apiKeyAuthEnabled?: boolean };
+type SettingsFormState = SettingsUpdateValue & { apiKeyAuthEnabled?: boolean };
 type NumberSettingsKey =
   | "rateLimitBackoffBaseMs"
   | "rateLimitBackoffMaxMs"
@@ -458,7 +459,9 @@ function DashboardPage() {
 function ConnectClaudeCodeCard() {
   const settings = trpc.settings.get.useQuery();
   const apiKeyAuthEnabled = Boolean(settings.data?.apiKeyAuthEnabled);
-  const origin = window.location.origin;
+  const proxyUrl = new URL(window.location.origin);
+  proxyUrl.port = String(settings.data?.proxyPort ?? 8485);
+  const origin = proxyUrl.origin;
   const tokenValue = apiKeyAuthEnabled ? "<your cc-lb API key>" : "cc-lb";
   const snippet = `export ANTHROPIC_BASE_URL=${origin}\nexport ANTHROPIC_AUTH_TOKEN=${tokenValue}`;
 
@@ -2516,11 +2519,22 @@ function formatDateish(value: string | number | null | undefined): string {
   return date.toLocaleString();
 }
 
-function settingsToFormState(settings: SettingsValue): SettingsFormState {
+function settingsToFormState(settings: SettingsUpdateValue | SettingsValue): SettingsFormState {
+  if ("proxyPort" in settings) {
+    const { proxyPort: _proxyPort, ...mutableSettings } = settings;
+    return {
+      ...mutableSettings,
+      apiKeyAuthEnabled: settingsSupportsApiKeyAuth(mutableSettings)
+        ? mutableSettings.apiKeyAuthEnabled
+        : false,
+    };
+  }
   return { ...settings, apiKeyAuthEnabled: settingsSupportsApiKeyAuth(settings) ? settings.apiKeyAuthEnabled : false };
 }
 
-function settingsSupportsApiKeyAuth(settings: SettingsValue): settings is SettingsValue & { apiKeyAuthEnabled: boolean } {
+function settingsSupportsApiKeyAuth(
+  settings: SettingsUpdateValue,
+): settings is SettingsUpdateValue & { apiKeyAuthEnabled: boolean } {
   return "apiKeyAuthEnabled" in settings;
 }
 

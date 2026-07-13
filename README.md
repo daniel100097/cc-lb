@@ -43,9 +43,12 @@ http://localhost:8484
 Add accounts from the dashboard, then point Claude Code at cc-lb:
 
 ```sh
-export ANTHROPIC_BASE_URL=http://localhost:8484
+export ANTHROPIC_BASE_URL=http://localhost:8485
 export ANTHROPIC_AUTH_TOKEN=anything
 ```
+
+The dashboard and its API listen on port `8484`. Claude Code proxy traffic
+listens separately on port `8485`.
 
 When API-key auth is enabled in Settings, use a dashboard-generated key as
 `ANTHROPIC_AUTH_TOKEN` instead.
@@ -58,10 +61,12 @@ services:
     image: ghcr.io/daniel100097/cc-lb:latest
     ports:
       - "8484:8484"
+      - "8485:8485"
     volumes:
       - ./data:/app/data
     environment:
-      PORT: "8484"
+      DASHBOARD_PORT: "8484"
+      PROXY_PORT: "8485"
       DB_PATH: /app/data/cc-lb.db
       CLAUDE_CONFIG_DIR: /app/data/claude
       CLAUDE_ACCOUNTS_DIR: /app/data/claude-accounts
@@ -95,6 +100,10 @@ bun run test
 bun run test:e2e
 ```
 
+With the default development configuration, the dashboard is available at
+`http://localhost:8484` and the Claude Code proxy at
+`http://localhost:8485`.
+
 The React dashboard lives in `frontend/` and builds directly into `public/` with
 Bun and Tailwind CLI. There is no Vite project.
 
@@ -123,9 +132,12 @@ tmux -S /tmp/cc-lb-claude-code.tmux attach -t cc-lb-probe-<hex>
 
 ## Routing
 
-Incoming proxy requests go to `/v1/*`. cc-lb selects an available account,
-rewrites the outbound auth header to that account's OAuth token, and forwards
-the request to Anthropic.
+Incoming proxy requests go to `/v1/*` on the dedicated proxy port (default
+`8485`). cc-lb selects an available account, rewrites the outbound auth header
+to that account's OAuth token, and forwards the request to Anthropic. The proxy
+port serves only proxy traffic, local telemetry acknowledgements, and its
+health endpoint. The dashboard, tRPC API, static assets, and a separate health
+endpoint use the dashboard port (default `8484`).
 
 Every `/v1/*` request must include a non-empty
 `x-claude-code-session-id` header and a `claude-cli/<version>` User-Agent whose
@@ -186,7 +198,9 @@ blocked tombstones.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `8484` | HTTP server port. |
+| `DASHBOARD_PORT` | `8484` | Dashboard, tRPC API, static assets, and dashboard health-check port. |
+| `PROXY_PORT` | `8485` | Claude Code `/v1/*`, local telemetry, and proxy health-check port. Must differ from `DASHBOARD_PORT`. |
+| `PORT` | unset | Deprecated dashboard-port fallback used only when `DASHBOARD_PORT` is unset. |
 | `DB_PATH` | `./data/cc-lb.db` | SQLite database path. |
 | `CLAUDE_CONFIG_DIR` | `./data/claude` | Default Claude config dir for CLI sessions. |
 | `CLAUDE_ACCOUNTS_DIR` | `./data/claude-accounts` | Per-account Claude config directories. |
@@ -195,8 +209,9 @@ blocked tombstones.
 | `DASHBOARD_PASSWORD` | unset | Protects the dashboard and `/api/trpc` when set. |
 | `ANTHROPIC_API_BASE` | `https://api.anthropic.com` | Upstream Anthropic API base URL. |
 
-Dashboard password auth does not protect `/v1/*`. Use the dashboard's API-key
-setting when the proxy endpoint itself should reject unknown clients.
+Dashboard password auth does not protect the proxy port or `/v1/*`. Use the
+dashboard's API-key setting when the proxy endpoint itself should reject
+unknown clients.
 
 ## Security
 

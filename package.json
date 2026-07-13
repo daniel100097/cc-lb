@@ -20,7 +20,7 @@
     "build:client": "bun build frontend/src/main.tsx --target browser --outdir public/assets --entry-naming [name].js --chunk-naming [name]-[hash].js --asset-naming [name]-[hash].[ext] --minify",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint .",
-    "test": "bun test ./src/**/*.test.ts ./frontend/src/**/*.test.ts",
+    "test": "bun test ./src/*.test.ts ./src/**/*.test.ts ./frontend/src/**/*.test.ts",
     "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",

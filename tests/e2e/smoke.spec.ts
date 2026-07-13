@@ -2,7 +2,48 @@ import { expect, test } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
 
+function proxyBaseUrl(): string {
+  const explicitProxyUrl = process.env.E2E_PROXY_BASE_URL;
+  if (explicitProxyUrl) return explicitProxyUrl;
+
+  const dashboardUrl = new URL(
+    process.env.E2E_BASE_URL ?? `http://127.0.0.1:${Number(process.env.E2E_PORT ?? 18_884)}`,
+  );
+  dashboardUrl.port = String(
+    Number(process.env.E2E_PROXY_PORT ?? Number(dashboardUrl.port || (dashboardUrl.protocol === "https:" ? 443 : 80)) + 1),
+  );
+  return dashboardUrl.origin;
+}
+
 test.describe("cc-lb dashboard with seeded data", () => {
+  test("keeps dashboard and Claude proxy routes on separate listeners", async ({ request }) => {
+    const dashboardHealth = await request.get("/api/health");
+    expect(dashboardHealth.status()).toBe(200);
+    await expect(dashboardHealth.json()).resolves.toMatchObject({
+      ok: true,
+      service: "cc-lb-dashboard",
+    });
+
+    const dashboardProxyRoute = await request.post("/v1/messages", { data: {} });
+    expect(dashboardProxyRoute.status()).toBe(404);
+    const dashboardTelemetry = await request.post("/api/event_logging/batch", { data: { events: [] } });
+    expect(dashboardTelemetry.status()).toBe(404);
+
+    const proxyUrl = proxyBaseUrl();
+    const proxyHealth = await fetch(`${proxyUrl}/api/health`);
+    expect(proxyHealth.status).toBe(200);
+    await expect(proxyHealth.json()).resolves.toMatchObject({
+      ok: true,
+      service: "cc-lb-proxy",
+    });
+
+    const proxyDashboard = await fetch(`${proxyUrl}/`);
+    expect(proxyDashboard.status).toBe(404);
+
+    const proxyTrpc = await fetch(`${proxyUrl}/api/trpc/health`);
+    expect(proxyTrpc.status).toBe(404);
+  });
+
   test("renders dashboard health and seeded account states", async ({ page }) => {
     await page.goto("/");
 
@@ -12,6 +53,9 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await expect(page.getByText("Needs reauth", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Requests (7d)", { exact: true })).toBeVisible();
     await expect(page.getByText("1 / 3", { exact: true })).toBeVisible();
+    await expect(page.locator("pre").filter({ hasText: "ANTHROPIC_BASE_URL" })).toContainText(
+      `export ANTHROPIC_BASE_URL=${proxyBaseUrl()}`,
+    );
   });
 
   test("adds and pauses an account through the Claude Code CLI flow", async ({ page }) => {
@@ -59,9 +103,13 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await expect(page.getByText("read 200 / create 50")).toBeVisible();
   });
 
-  test("logs telemetry short-circuits into the request table", async ({ page, request }) => {
-    const response = await request.post("/api/event_logging/batch", { data: { events: [] } });
-    expect(response.ok()).toBe(true);
+  test("logs telemetry short-circuits into the request table", async ({ page }) => {
+    const response = await fetch(`${proxyBaseUrl()}/api/event_logging/batch`, {
+      body: JSON.stringify({ events: [] }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(response.ok).toBe(true);
 
     await page.goto("/requests");
     await page.getByLabel("Outcome").selectOption("telemetry");

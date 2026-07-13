@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const port = Number(process.env.E2E_PORT ?? 18_884);
+const proxyPort = Number(process.env.E2E_PROXY_PORT ?? port + 1);
 const explicitBaseURL = process.env.E2E_BASE_URL;
 const baseURL = explicitBaseURL ?? `http://127.0.0.1:${port}`;
 const dbPath = process.env.E2E_DB_PATH ?? `/tmp/cc-lb-e2e-${process.pid}.db`;
@@ -41,7 +42,8 @@ const command = [
   "tests/e2e/seed.ts",
   "&&",
   `DB_PATH=${shellQuote(dbPath)}`,
-  `PORT=${port}`,
+  `DASHBOARD_PORT=${port}`,
+  `PROXY_PORT=${proxyPort}`,
   `CLAUDE_CONFIG_DIR=${shellQuote(claudeConfigDir)}`,
   `CLAUDE_ACCOUNTS_DIR=${shellQuote(claudeAccountsDir)}`,
   `CLAUDE_CODE_LOGIN_COMMAND=${shellQuote(fakeClaudeCodeLoginCommand)}`,

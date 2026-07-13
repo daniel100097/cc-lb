@@ -1,8 +1,14 @@
-// Docker HEALTHCHECK: exit 0 if the server answers /api/health.
-const port = Number(process.env.PORT ?? 8484);
+import { servicePorts } from "./ports";
+
+// Docker HEALTHCHECK: both isolated listeners must answer their health route.
+const ports = servicePorts();
+
 try {
-  const res = await fetch(`http://localhost:${port}/api/health`);
-  process.exit(res.ok ? 0 : 1);
+  const [dashboard, proxy] = await Promise.all([
+    fetch(`http://localhost:${ports.dashboard}/api/health`),
+    fetch(`http://localhost:${ports.proxy}/api/health`),
+  ]);
+  process.exit(dashboard.ok && proxy.ok ? 0 : 1);
 } catch {
   process.exit(1);
 }

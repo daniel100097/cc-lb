@@ -46,6 +46,7 @@ import {
   type RequestLogEntry,
 } from "../db/request-log";
 import { getSettings, patchSettings } from "../db/settings";
+import { proxyPort } from "../ports";
 import {
   blockFilteredStickySessions,
   blockStickySessions,
@@ -258,7 +259,7 @@ export const appRouter = router({
   }),
 
   settings: router({
-    get: publicProcedure.query(() => getSettings()),
+    get: publicProcedure.query(() => ({ ...getSettings(), proxyPort: proxyPort() })),
     update: publicProcedure.input(settingsPatchSchema).mutation(({ input }) => patchSettings(input)),
   }),
 

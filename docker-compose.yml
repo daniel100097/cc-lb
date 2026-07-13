@@ -4,10 +4,12 @@ services:
     build: .
     ports:
       - "8484:8484"
+      - "8485:8485"
     volumes:
       - ./data:/app/data
     environment:
-      PORT: "8484"
+      DASHBOARD_PORT: "8484"
+      PROXY_PORT: "8485"
       DB_PATH: /app/data/cc-lb.db
       # DASHBOARD_PASSWORD: changeme
       # To capture what cc-lb forwards upstream, start the compare-proxy sidecar
@@ -34,4 +36,6 @@ services:
       PROXY_TARGET: https://api.anthropic.com
       PROXY_OUT: /app/data/compare
       PROXY_LABEL: direct
+    healthcheck:
+      disable: true
     restart: unless-stopped

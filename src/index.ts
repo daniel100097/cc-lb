@@ -6,42 +6,36 @@ import {
 } from "./auth";
 import { handleTrpc } from "./api/server";
 import { startUsageRefresher } from "./anthropic/usage-refresher";
+import { servicePorts } from "./ports";
 import { handleProxy } from "./proxy/handler";
 
-const PORT = Number(process.env.PORT ?? 8484);
+const { dashboard: DASHBOARD_PORT, proxy: PROXY_PORT } = servicePorts();
+
 const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
 const TELEMETRY_PATHS = new Set(["/api/event_logging/batch", "/api/system/package-manager"]);
 
 startUsageRefresher();
 
-const server = Bun.serve({
-  port: PORT,
-  // Bun's default idleTimeout is 10s of socket silence and applies mid-stream,
-  // so quiet gaps in proxied SSE responses would drop the connection without message_stop.
+const dashboardServer = Bun.serve({
+  port: DASHBOARD_PORT,
   idleTimeout: 255,
-  async fetch(req, server) {
+  async fetch(req) {
     const url = new URL(req.url);
 
-    // Liveness
     if (url.pathname === "/api/health") {
-      return Response.json({ ok: true, service: "cc-lb", time: Date.now() });
+      return healthResponse("cc-lb-dashboard");
+    }
+
+    if (TELEMETRY_PATHS.has(url.pathname)) {
+      return Response.json({ error: "proxy_port_required", proxyPort: PROXY_PORT }, { status: 404 });
     }
 
     const authResponse = await handleAuthRoute(req, url);
-    if (authResponse) {
-      return authResponse;
-    }
+    if (authResponse) return authResponse;
 
     if (url.pathname.startsWith("/api/trpc")) {
       if (!isDashboardAuthenticated(req)) return unauthorizedApiResponse();
       return handleTrpc(req);
-    }
-
-    if (url.pathname.startsWith("/v1/") || TELEMETRY_PATHS.has(url.pathname)) {
-      // Upstream streams can stay silent longer than any idleTimeout cap (max 255s);
-      // disable the idle timer entirely for proxied requests.
-      server.timeout(req, 0);
-      return handleProxy(req, url);
     }
 
     if (url.pathname.startsWith("/api/")) {
@@ -49,11 +43,15 @@ const server = Bun.serve({
       return Response.json({ error: "not_found" }, { status: 404 });
     }
 
+    // Proxy traffic is intentionally unavailable on the dashboard listener.
+    if (url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: "proxy_port_required", proxyPort: PROXY_PORT }, { status: 404 });
+    }
+
     if (!isDashboardAuthenticated(req)) {
       return loginResponse(url, false);
     }
 
-    // Static SPA (built by Bun into ../public); fall back to index.html.
     const filePath = url.pathname === "/" ? "/index.html" : url.pathname;
     const file = Bun.file(PUBLIC_DIR + filePath.replace(/^\//, ""));
     if (await file.exists()) return new Response(file);
@@ -61,10 +59,36 @@ const server = Bun.serve({
     const index = Bun.file(PUBLIC_DIR + "index.html");
     if (await index.exists()) return new Response(index);
 
-    return new Response("cc-lb running. Build the frontend to see the dashboard.", {
+    return new Response("cc-lb dashboard running. Build the frontend to see it.", {
       headers: { "content-type": "text/plain" },
     });
   },
 });
 
-console.log(`cc-lb listening on http://localhost:${server.port}`);
+const proxyServer = Bun.serve({
+  port: PROXY_PORT,
+  // Quiet SSE streams can exceed Bun's idle-timeout ceiling; disable the
+  // request timer for proxy traffic after accepting it.
+  idleTimeout: 255,
+  fetch(req, server) {
+    const url = new URL(req.url);
+
+    if (url.pathname === "/api/health") {
+      return healthResponse("cc-lb-proxy");
+    }
+
+    if (url.pathname.startsWith("/v1/") || TELEMETRY_PATHS.has(url.pathname)) {
+      server.timeout(req, 0);
+      return handleProxy(req, url);
+    }
+
+    return Response.json({ error: "not_found" }, { status: 404 });
+  },
+});
+
+console.log(`cc-lb dashboard listening on http://localhost:${dashboardServer.port}`);
+console.log(`cc-lb proxy listening on http://localhost:${proxyServer.port}`);
+
+function healthResponse(service: "cc-lb-dashboard" | "cc-lb-proxy"): Response {
+  return Response.json({ ok: true, service, time: Date.now() });
+}

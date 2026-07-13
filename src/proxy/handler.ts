@@ -8,6 +8,7 @@ import { isAvailable, toState, type AccountState, type StrategyName } from "../b
 import { bumpRequestCount, listAccounts, updateAccount, type Account } from "../db/accounts";
 import { validateApiKeySecret, type ApiKey } from "../db/api-keys";
 import { getSettings, type Settings } from "../db/settings";
+import { dashboardPort } from "../ports";
 import {
   bindStickyClientDeviceId,
   claimPendingSticky,
@@ -1432,7 +1433,7 @@ function poolExhausted(accounts: Account[], now: number): Response {
     accounts: details,
   };
   if (reauthNames.length > 0) {
-    const port = Number(process.env.PORT ?? 8484);
+    const port = dashboardPort();
     const plural = reauthNames.length > 1;
     body.message =
       `Account${plural ? "s" : ""} ${reauthNames.join(", ")} need${plural ? "" : "s"} re-authentication. ` +
