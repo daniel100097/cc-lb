@@ -6,7 +6,6 @@ import {
   deleteAccountConfigDir,
   readCredentialsFile,
 } from "../anthropic/account-config";
-import { installedClaudeUserAgent } from "../anthropic/claude-version";
 import { probeAccount, probeTmuxSessionName } from "../anthropic/account-probe";
 import { killTmuxSession } from "../anthropic/tmux-driver";
 import type { UsageWindow } from "../anthropic/usage-panel";
@@ -48,10 +47,9 @@ import {
 } from "../db/request-log";
 import { getSettings, patchSettings } from "../db/settings";
 import {
-  deleteFilteredStickySessions,
-  deleteStickySessions,
+  blockFilteredStickySessions,
+  blockStickySessions,
   listStickySessions,
-  purgeStaleStickySessions,
   type StickySessionEntry,
 } from "../db/sticky";
 import { publicProcedure, router } from "./trpc";
@@ -68,8 +66,6 @@ const strategySchema = z.enum([
 const settingsPatchSchema = z
   .object({
     strategy: strategySchema.optional(),
-    stickySessions: z.boolean().optional(),
-    stickyTtlMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
     apiKeyAuthEnabled: z.boolean().optional(),
     rawHttpLoggingEnabled: z.boolean().optional(),
     rateLimitBackoffBaseMs: z.number().int().min(1_000).max(60 * 60 * 1000).optional(),
@@ -77,7 +73,6 @@ const settingsPatchSchema = z
     sessionDurationMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000).optional(),
     overloadRetryMax: z.number().int().min(0).max(10).optional(),
     newSessionUsageCutoffPercent: z.number().int().min(1).max(100).optional(),
-    userAgentOverride: z.string().trim().max(300).optional(),
     stripForwardedHeaders: z.boolean().optional(),
   })
   .strict();
@@ -156,13 +151,17 @@ const stickyListSchema = z
     accountId: z.string().min(1).nullable().optional(),
     accountQuery: z.string().trim().max(200).nullable().optional(),
     search: z.string().trim().max(200).nullable().optional(),
-    stale: z.boolean().nullable().optional(),
     sortBy: z.enum(["updated_at", "key", "account_name"]).optional(),
     sortDirection: z.enum(["asc", "desc"]).optional(),
   })
   .strict();
 
-const stickyDeleteSelectedSchema = z.object({ keys: z.array(z.string().min(1)).max(1_000) }).strict();
+const stickyBlockFilteredSchema = stickyListSchema.refine(
+  (input) => Boolean(input.accountId || input.accountQuery?.trim() || input.search?.trim()),
+  { message: "At least one sticky-session filter is required" },
+);
+
+const stickyBlockSelectedSchema = z.object({ keys: z.array(z.string().min(1)).max(1_000) }).strict();
 
 const FIXED_OUTCOMES = [
   "ok",
@@ -265,7 +264,6 @@ export const appRouter = router({
   settings: router({
     get: publicProcedure.query(() => getSettings()),
     update: publicProcedure.input(settingsPatchSchema).mutation(({ input }) => patchSettings(input)),
-    installedUserAgent: publicProcedure.query(() => ({ userAgent: installedClaudeUserAgent() })),
   }),
 
   apiKeys: router({
@@ -378,53 +376,41 @@ export const appRouter = router({
 
   stickySessions: router({
     list: publicProcedure.input(stickyListSchema.optional()).query(({ input }) => {
-      const settings = getSettings();
       const page = listStickySessions({
         limit: input?.limit ?? 50,
         offset: input?.offset ?? 0,
-        ttlMs: settings.stickyTtlMs,
         now: Date.now(),
         accountId: input?.accountId ?? null,
         accountQuery: input?.accountQuery?.trim() || null,
         search: input?.search?.trim() || null,
-        stale: input?.stale ?? null,
         sortBy: input?.sortBy ?? "updated_at",
         sortDirection: input?.sortDirection ?? "desc",
       });
       return {
         entries: page.entries.map(toPublicStickySession),
         total: page.total,
-        stalePromptCacheCount: page.stalePromptCacheCount,
+        activeCount: page.activeCount,
         hasMore: (input?.offset ?? 0) + page.entries.length < page.total,
       };
     }),
 
-    deleteSelected: publicProcedure.input(stickyDeleteSelectedSchema).mutation(({ input }) => {
-      const deleted = deleteStickySessions(input.keys);
-      return { deleted, deletedCount: deleted };
+    blockSelected: publicProcedure.input(stickyBlockSelectedSchema).mutation(({ input }) => {
+      const blocked = blockStickySessions(input.keys, Date.now());
+      return { blocked, blockedCount: blocked };
     }),
 
-    deleteFiltered: publicProcedure.input(stickyListSchema.optional()).mutation(({ input }) => {
-      const settings = getSettings();
-      const deleted = deleteFilteredStickySessions({
+    blockFiltered: publicProcedure.input(stickyBlockFilteredSchema).mutation(({ input }) => {
+      const blocked = blockFilteredStickySessions({
         limit: 1,
         offset: 0,
-        ttlMs: settings.stickyTtlMs,
         now: Date.now(),
         accountId: input?.accountId ?? null,
         accountQuery: input?.accountQuery?.trim() || null,
         search: input?.search?.trim() || null,
-        stale: input?.stale ?? null,
         sortBy: input?.sortBy ?? "updated_at",
         sortDirection: input?.sortDirection ?? "desc",
       });
-      return { deleted, deletedCount: deleted };
-    }),
-
-    purgeStale: publicProcedure.mutation(() => {
-      const settings = getSettings();
-      const deleted = purgeStaleStickySessions(settings.stickyTtlMs, Date.now());
-      return { deleted, deletedCount: deleted };
+      return { blocked, blockedCount: blocked };
     }),
   }),
 
@@ -601,13 +587,11 @@ function emptyUsageSummary(): UsageSummary {
 function toPublicStickySession(entry: StickySessionEntry) {
   return {
     key: entry.key,
-    kind: entry.kind,
     accountId: entry.account_id,
     accountName: entry.account_name,
     updatedAt: entry.updated_at,
-    expiresAt: entry.expires_at,
     ageMs: entry.age_ms,
-    stale: entry.stale,
+    status: entry.status,
   };
 }
 

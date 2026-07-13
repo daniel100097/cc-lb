@@ -11,13 +11,27 @@ const accountsDir = `/tmp/cc-lb-proxy-accounts-${process.pid}`;
 process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
 const { createAccount, getAccount, listAccounts, updateAccount } = await import("../db/accounts");
+const { installedClaudeVersion } = await import("../anthropic/claude-version");
 const { DEVICE_ID_HEADER } = await import("../anthropic/headers");
 const { listRequests } = await import("../db/request-log");
 const { patchSettings } = await import("../db/settings");
-const { getSticky, setSticky } = await import("../db/sticky");
-const { handleProxy } = await import("./handler");
+const { blockStickySessions, claimSticky, getSticky } = await import("../db/sticky");
+const { handleProxy: handleProxyRequest } = await import("./handler");
 const { seedAccountCredentials } = await import("../testing/seed-credentials");
 const { accountConfigDir } = await import("../anthropic/account-config");
+
+const installedVersion = installedClaudeVersion();
+if (!installedVersion) throw new Error("Claude Code test dependency is missing");
+const installedUserAgent = `claude-cli/${installedVersion} (external, cli)`;
+let sessionSequence = 0;
+
+function handleProxy(req: Request, url: URL): Promise<Response> {
+  const headers = new Headers(req.headers);
+  const sessionId = headers.get("x-claude-code-session-id") ?? `handler-test-${process.pid}-${++sessionSequence}`;
+  headers.set("x-claude-code-session-id", sessionId);
+  if (!headers.has("user-agent")) headers.set("user-agent", installedUserAgent);
+  return handleProxyRequest(new Request(req, { headers }), url);
+}
 
 function writeAccountClaudeJson(accountId: string, body: Record<string, unknown>): void {
   mkdirSync(accountConfigDir(accountId), { recursive: true });
@@ -33,7 +47,7 @@ afterAll(() => {
 
 describe("handleProxy", () => {
   test("logs telemetry short-circuits", async () => {
-    const response = await handleProxy(
+    const response = await handleProxyRequest(
       new Request("http://cc-lb.test/api/event_logging/batch", { method: "POST" }),
       new URL("http://cc-lb.test/api/event_logging/batch"),
     );
@@ -46,7 +60,115 @@ describe("handleProxy", () => {
     expect(logs.entries[0]?.raw_response_body).toBeNull();
   });
 
-  test("existing sticky sessions do not fall back when the pinned account is already rate-limited", async () => {
+  test("rejects requests without the official Claude Code session header", async () => {
+    const { inits, restore } = captureFetch(() => Response.json({ unexpected: true }));
+    const cases = [
+      new Headers({ "user-agent": installedUserAgent }),
+      new Headers({ "user-agent": installedUserAgent, "x-claude-code-session-id": "   " }),
+      new Headers({ "user-agent": installedUserAgent, "x-cc-session-id": "alias-only" }),
+    ];
+
+    try {
+      for (const headers of cases) {
+        const response = await handleProxyRequest(
+          new Request("http://cc-lb.test/v1/messages", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              model: "claude-rejected-session",
+              messages: [],
+              metadata: { user_id: JSON.stringify({ session_id: "metadata-only" }) },
+            }),
+          }),
+          new URL("http://cc-lb.test/v1/messages"),
+        );
+        expect(response.status).toBe(403);
+        expect((await response.json()).error).toBe("claude_code_required");
+      }
+      expect(inits).toHaveLength(0);
+      expect(getSticky("sid:alias-only")).toBeNull();
+      expect(getSticky("sid:metadata-only")).toBeNull();
+      expect(listRequests({ limit: 10, offset: 0, search: "claude-rejected-session" }).total).toBe(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("rejects Claude Code versions that do not match the server", async () => {
+    const { inits, restore } = captureFetch(() => Response.json({ unexpected: true }));
+    const userAgents = [null, "curl/8.0", "claude-cli/0.0.0 (external, cli)"];
+
+    try {
+      for (const userAgent of userAgents) {
+        const headers = new Headers({ "x-claude-code-session-id": "wrong-version" });
+        if (userAgent) headers.set("user-agent", userAgent);
+        const response = await handleProxyRequest(
+          new Request("http://cc-lb.test/v1/messages", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ model: "claude-rejected-version", messages: [] }),
+          }),
+          new URL("http://cc-lb.test/v1/messages"),
+        );
+        expect(response.status).toBe(403);
+        expect((await response.json()).error).toBe("claude_code_version_mismatch");
+      }
+      expect(inits).toHaveLength(0);
+      expect(getSticky("sid:wrong-version")).toBeNull();
+      expect(listRequests({ limit: 10, offset: 0, search: "claude-rejected-version" }).total).toBe(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("permanently rejects an operator-blocked session without trying another account", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const home = createAccount({ name: "Blocked home", priority: 0 });
+    seedAccountCredentials(home.id, {
+      accessToken: "blocked-home-access",
+      refreshToken: "blocked-home-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const other = createAccount({ name: "Blocked other", priority: 1 });
+    seedAccountCredentials(other.id, {
+      accessToken: "blocked-other-access",
+      refreshToken: "blocked-other-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    claimSticky("sid:operator-blocked", home.id, now - 1_000);
+    expect(blockStickySessions(["sid:operator-blocked"], now)).toBe(1);
+
+    const { inits, restore } = captureFetch(() => Response.json({ unexpected: true }));
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-claude-code-session-id": "operator-blocked",
+          },
+          body: JSON.stringify({ model: "claude-operator-blocked", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toBe("session_blocked");
+      expect(inits).toHaveLength(0);
+      expect(getSticky("sid:operator-blocked")).toEqual({ accountId: home.id, status: "blocked" });
+      expect(claimSticky("sid:operator-blocked", other.id, now + 1_000)).toEqual({
+        accountId: home.id,
+        status: "blocked",
+      });
+      expect(listRequests({ limit: 10, offset: 0, search: "claude-operator-blocked" }).total).toBe(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("old chat sessions never expire or fall back when their account is rate-limited", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -70,7 +192,7 @@ describe("handleProxy", () => {
       expiresAt: now + 3_600_000,
     });
     updateAccount(home.id, { rate_limited_until: now + 60_000 });
-    setSticky("sid:session-abc", home.id, now);
+    claimSticky("sid:session-abc", home.id, now - 7 * 24 * 60 * 60 * 1000);
 
     let call = 0;
     const { restore } = captureFetch(() => {
@@ -84,7 +206,7 @@ describe("handleProxy", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            "x-cc-session-id": "session-abc",
+            "x-claude-code-session-id": "session-abc",
             "anthropic-version": "2023-06-01",
           },
           body: JSON.stringify({ model: "claude-handler-unique", messages: [] }),
@@ -94,7 +216,7 @@ describe("handleProxy", () => {
       expect(response.status).toBe(503);
       expect(response.headers.get("retry-after")).not.toBeNull();
       expect(call).toBe(0);
-      expect(getSticky("sid:session-abc", 60_000, Date.now())).toBe(home.id);
+      expect(getSticky("sid:session-abc")).toEqual({ accountId: home.id, status: "active" });
       const body = await response.json();
       expect(body.accounts).toHaveLength(1);
       expect(body.accounts[0]?.id).toBe(home.id);
@@ -105,7 +227,7 @@ describe("handleProxy", () => {
     }
   });
 
-  test("existing sticky sessions do not fall back after a live rate-limit response", async () => {
+  test("new chat sessions claim one account before the first upstream attempt", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -128,8 +250,6 @@ describe("handleProxy", () => {
       refreshToken: "rate-stay-fallback-refresh",
       expiresAt: now + 3_600_000,
     });
-    setSticky("sid:session-stay", home.id, now - 30_000);
-
     let call = 0;
     const { restore } = captureFetch(() => {
       call += 1;
@@ -143,7 +263,7 @@ describe("handleProxy", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            "x-cc-session-id": "session-stay",
+            "x-claude-code-session-id": "session-stay",
             "anthropic-version": "2023-06-01",
           },
           body: JSON.stringify({ model: "claude-handler-stay", messages: [] }),
@@ -154,7 +274,7 @@ describe("handleProxy", () => {
       expect(response.headers.get("retry-after")).not.toBeNull();
       await response.json();
       expect(call).toBe(1);
-      expect(getSticky("sid:session-stay", 60_000, Date.now())).toBe(home.id);
+      expect(getSticky("sid:session-stay")).toEqual({ accountId: home.id, status: "active" });
       expect(getAccount(home.id)?.rate_limited_until).not.toBeNull();
       const logs = listRequests({ limit: 10, offset: 0, search: "claude-handler-stay" });
       expect(logs.entries.find((entry) => entry.account_id === home.id)?.outcome).toBe("rate_limited");
@@ -164,7 +284,7 @@ describe("handleProxy", () => {
     }
   });
 
-  test("new sticky sessions skip accounts at or above the usage cutoff", async () => {
+  test("new chats skip accounts at or above the usage cutoff", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -192,14 +312,14 @@ describe("handleProxy", () => {
       const response = await handleProxy(
         new Request("http://cc-lb.test/v1/messages", {
           method: "POST",
-          headers: { "content-type": "application/json", "x-cc-session-id": "session-cutoff-new" },
+          headers: { "content-type": "application/json", "x-claude-code-session-id": "session-cutoff-new" },
           body: JSON.stringify({ model: "claude-cutoff-new", messages: [] }),
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
       expect(response.status).toBe(200);
       await response.text();
-      expect(getSticky("sid:session-cutoff-new", 60_000, Date.now())).toBe(fresh.id);
+      expect(getSticky("sid:session-cutoff-new")).toEqual({ accountId: fresh.id, status: "active" });
       const logs = listRequests({ limit: 10, offset: 0, search: "claude-cutoff-new" });
       expect(logs.entries[0]?.account_id).toBe(fresh.id);
     } finally {
@@ -207,7 +327,7 @@ describe("handleProxy", () => {
     }
   });
 
-  test("new sticky sessions also skip accounts above the weekly cutoff", async () => {
+  test("new chats also skip accounts above the weekly cutoff", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -238,14 +358,14 @@ describe("handleProxy", () => {
       const response = await handleProxy(
         new Request("http://cc-lb.test/v1/messages", {
           method: "POST",
-          headers: { "content-type": "application/json", "x-cc-session-id": "session-cutoff-weekly" },
+          headers: { "content-type": "application/json", "x-claude-code-session-id": "session-cutoff-weekly" },
           body: JSON.stringify({ model: "claude-cutoff-weekly", messages: [] }),
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
       expect(response.status).toBe(200);
       await response.text();
-      expect(getSticky("sid:session-cutoff-weekly", 60_000, Date.now())).toBe(fresh.id);
+      expect(getSticky("sid:session-cutoff-weekly")).toEqual({ accountId: fresh.id, status: "active" });
     } finally {
       restore();
     }
@@ -283,14 +403,14 @@ describe("handleProxy", () => {
       const response = await handleProxy(
         new Request("http://cc-lb.test/v1/messages", {
           method: "POST",
-          headers: { "content-type": "application/json", "x-cc-session-id": "session-cutoff-all" },
+          headers: { "content-type": "application/json", "x-claude-code-session-id": "session-cutoff-all" },
           body: JSON.stringify({ model: "claude-cutoff-all", messages: [] }),
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
       expect(response.status).toBe(200);
       await response.text();
-      expect(getSticky("sid:session-cutoff-all", 60_000, Date.now())).toBe(first.id);
+      expect(getSticky("sid:session-cutoff-all")).toEqual({ accountId: first.id, status: "active" });
     } finally {
       restore();
     }
@@ -317,7 +437,7 @@ describe("handleProxy", () => {
       usage_windows: sessionUsageWindows(96, now + 3_600_000),
       usage_checked_at: now,
     });
-    setSticky("sid:session-cutoff-home", home.id, now);
+    claimSticky("sid:session-cutoff-home", home.id, now);
 
     const { restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
 
@@ -325,16 +445,74 @@ describe("handleProxy", () => {
       const response = await handleProxy(
         new Request("http://cc-lb.test/v1/messages", {
           method: "POST",
-          headers: { "content-type": "application/json", "x-cc-session-id": "session-cutoff-home" },
+          headers: { "content-type": "application/json", "x-claude-code-session-id": "session-cutoff-home" },
           body: JSON.stringify({ model: "claude-cutoff-home", messages: [] }),
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
       expect(response.status).toBe(200);
       await response.text();
-      expect(getSticky("sid:session-cutoff-home", 60_000, Date.now())).toBe(home.id);
+      expect(getSticky("sid:session-cutoff-home")).toEqual({ accountId: home.id, status: "active" });
       const logs = listRequests({ limit: 10, offset: 0, search: "claude-cutoff-home" });
       expect(logs.entries[0]?.account_id).toBe(home.id);
+    } finally {
+      restore();
+    }
+  });
+
+  test("count_tokens and messages share one permanent Claude Code session home", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const home = createAccount({ name: "Shared endpoint home", priority: 0 });
+    seedAccountCredentials(home.id, {
+      accessToken: "shared-home-access",
+      refreshToken: "shared-home-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const other = createAccount({ name: "Shared endpoint other", priority: 1 });
+    seedAccountCredentials(other.id, {
+      accessToken: "shared-other-access",
+      refreshToken: "shared-other-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const headers = {
+      "content-type": "application/json",
+      "x-claude-code-session-id": "shared-endpoints",
+    };
+    const { headers: outboundHeaders, restore } = captureFetch(() =>
+      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+
+    try {
+      const countResponse = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages/count_tokens?beta=true", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ model: "claude-shared-count", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages/count_tokens?beta=true"),
+      );
+      expect(countResponse.status).toBe(200);
+      await countResponse.text();
+
+      updateAccount(home.id, { priority: 10 });
+      updateAccount(other.id, { priority: 0 });
+      const messageResponse = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ model: "claude-shared-message", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(messageResponse.status).toBe(200);
+      await messageResponse.text();
+
+      expect(getSticky("sid:shared-endpoints")).toEqual({ accountId: home.id, status: "active" });
+      expect(outboundHeaders).toHaveLength(2);
+      expect(outboundHeaders.every((entry) => entry.get("authorization") === "Bearer shared-home-access")).toBe(true);
     } finally {
       restore();
     }
@@ -398,41 +576,6 @@ describe("handleProxy", () => {
     }
   });
 
-  test("applies the user-agent override to the upstream request", async () => {
-    const now = Date.now();
-    for (const account of listAccounts()) {
-      updateAccount(account.id, { paused: 1 });
-    }
-    const account = createAccount({ name: "UA override" });
-    seedAccountCredentials(account.id, {
-      accessToken: "ua-access",
-      refreshToken: "ua-refresh",
-      expiresAt: now + 3_600_000,
-    });
-    patchSettings({ userAgentOverride: "claude-cli/2.0.14 (external, cli)" });
-
-    const { headers: outboundHeaders, restore } = captureFetch(() =>
-      Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }),
-    );
-
-    try {
-      const response = await handleProxy(
-        new Request("http://cc-lb.test/v1/messages", {
-          method: "POST",
-          headers: { "content-type": "application/json", "user-agent": "claude-cli/1.0.0 (external, cli)" },
-          body: JSON.stringify({ model: "claude-ua-override", messages: [] }),
-        }),
-        new URL("http://cc-lb.test/v1/messages"),
-      );
-      expect(response.status).toBe(200);
-      await response.text();
-      expect(outboundHeaders[0]?.get("user-agent")).toBe("claude-cli/2.0.14 (external, cli)");
-    } finally {
-      patchSettings({ userAgentOverride: "" });
-      restore();
-    }
-  });
-
   test("disables upstream TCP connection reuse", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
@@ -467,7 +610,7 @@ describe("handleProxy", () => {
     }
   });
 
-  test("passes the client user-agent upstream when no override is set", async () => {
+  test("passes the matching client user-agent upstream unchanged", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -487,14 +630,19 @@ describe("handleProxy", () => {
       const response = await handleProxy(
         new Request("http://cc-lb.test/v1/messages", {
           method: "POST",
-          headers: { "content-type": "application/json", "user-agent": "claude-cli/1.0.0 (external, cli)" },
+          headers: {
+            "content-type": "application/json",
+            "user-agent": `claude-cli/${installedVersion} (external, sdk-ts, agent-sdk/0.3.199)`,
+          },
           body: JSON.stringify({ model: "claude-ua-passthrough", messages: [] }),
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
       expect(response.status).toBe(200);
       await response.text();
-      expect(outboundHeaders[0]?.get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
+      expect(outboundHeaders[0]?.get("user-agent")).toBe(
+        `claude-cli/${installedVersion} (external, sdk-ts, agent-sdk/0.3.199)`,
+      );
     } finally {
       restore();
     }
@@ -706,7 +854,7 @@ describe("handleProxy", () => {
     }
   });
 
-  test("keeps the original body pristine across failover to accounts without overrides", async () => {
+  test("does not send a session body to another account after a rate limit", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -747,11 +895,10 @@ describe("handleProxy", () => {
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
-      expect(response.status).toBe(200);
-      await response.text();
-      expect(outboundBodies.length).toBe(2);
+      expect(response.status).toBe(503);
+      await response.json();
+      expect(outboundBodies.length).toBe(1);
       expect(decodeBody(outboundBodies[0]).device_id).toBe("device-a");
-      expect(decodeBody(outboundBodies[1]).device_id).toBe("client-device");
     } finally {
       restore();
     }
@@ -1054,7 +1201,7 @@ describe("handleProxy", () => {
     }
   });
 
-  test("patches account_uuid per attempt so each failover account sends its own id", async () => {
+  test("does not try another account when a metadata session fails", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -1089,7 +1236,7 @@ describe("handleProxy", () => {
       const response = await handleProxy(
         new Request("http://cc-lb.test/v1/messages", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", "x-claude-code-session-id": "s" },
           body: JSON.stringify({
             model: "claude-uuid-failover",
             messages: [],
@@ -1098,17 +1245,17 @@ describe("handleProxy", () => {
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
-      expect(response.status).toBe(200);
-      await response.text();
-      expect(outboundBodies.length).toBe(2);
+      expect(response.status).toBe(503);
+      await response.json();
+      expect(outboundBodies.length).toBe(1);
       expect(JSON.parse(decodeBody(outboundBodies[0]).metadata.user_id).account_uuid).toBe(first.id);
-      expect(JSON.parse(decodeBody(outboundBodies[1]).metadata.user_id).account_uuid).toBe(second.id);
+      expect(getSticky("sid:s")).toEqual({ accountId: first.id, status: "active" });
     } finally {
       restore();
     }
   });
 
-  test("stops failover and returns 499 when the client has disconnected", async () => {
+  test("returns 499 when the client has disconnected", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -1156,7 +1303,7 @@ describe("handleProxy", () => {
     }
   });
 
-  test("fails over on out_of_credits without benching the account", async () => {
+  test("keeps an out-of-credits session pinned without benching or failover", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
       updateAccount(account.id, { paused: 1 });
@@ -1201,9 +1348,8 @@ describe("handleProxy", () => {
         }),
         new URL("http://cc-lb.test/v1/messages"),
       );
-      expect(response.status).toBe(200);
-      await response.text();
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(response.status).toBe(503);
+      await response.json();
 
       const benched = getAccount(creditless.id);
       expect(benched?.rate_limited_until).toBeNull();
@@ -1213,7 +1359,8 @@ describe("handleProxy", () => {
       const creditlessEntry = logs.entries.find((entry) => entry.account_id === creditless.id);
       const fallbackEntry = logs.entries.find((entry) => entry.account_id === fallback.id);
       expect(creditlessEntry?.outcome).toBe("rate_limited");
-      expect(fallbackEntry?.outcome).toBe("ok");
+      expect(fallbackEntry).toBeUndefined();
+      expect(call).toBe(1);
     } finally {
       restore();
     }

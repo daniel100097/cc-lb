@@ -64,7 +64,7 @@ function compareNoisyRoundRobinBucket(a: AccountState, b: AccountState): number 
 export const STRATEGIES: Record<StrategyName, Strategy> = {
   priority: {
     name: "priority",
-    description: "Lowest priority number first; ties broken by fewest requests. Predictable ordered failover.",
+    description: "Lowest priority number first; ties broken by fewest requests. Predictable new-chat placement.",
     pick: (a) =>
       minBy(a, (x, y) =>
         compareNumber(x.priority, y.priority) ||

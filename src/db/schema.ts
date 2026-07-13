@@ -36,6 +36,7 @@ export const stickySessions = sqliteTable("sticky_sessions", {
   key: text("key").primaryKey(),
   accountId: text("account_id").notNull(),
   updatedAt: integer("updated_at").notNull(),
+  status: text("status").notNull().default("active"),
 });
 
 export const apiKeys = sqliteTable(

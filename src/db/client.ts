@@ -54,7 +54,8 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       CREATE TABLE sticky_sessions (
         key        TEXT PRIMARY KEY,
         account_id TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        status     TEXT NOT NULL DEFAULT 'active'
       );
 
       CREATE TABLE request_log (
@@ -187,6 +188,7 @@ function migrate() {
   ensureColumn("accounts", "rate_limit_5h_reset", "INTEGER");
   ensureColumn("accounts", "rate_limit_7d_utilization", "REAL");
   ensureColumn("accounts", "rate_limit_7d_reset", "INTEGER");
+  ensureColumn("sticky_sessions", "status", "TEXT NOT NULL DEFAULT 'active'");
   dropColumn("accounts", "access_token");
   dropColumn("accounts", "refresh_token");
   dropColumn("accounts", "expires_at");

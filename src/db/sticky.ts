@@ -1,89 +1,88 @@
-import { eq, lt } from "drizzle-orm";
-import { db } from "./client";
-import { orm } from "./client";
+import { and, eq } from "drizzle-orm";
+import { db, orm } from "./client";
 import { stickySessions } from "./schema";
 
 export type StickySortBy = "key" | "updated_at" | "account_name";
 export type StickySortDirection = "asc" | "desc";
+export type StickySessionStatus = "active" | "blocked";
+
+export interface StickyBinding {
+  accountId: string;
+  status: StickySessionStatus;
+}
 
 export interface StickySessionFilter {
   limit: number;
   offset: number;
-  ttlMs: number;
   now: number;
   accountId?: string | null;
   accountQuery?: string | null;
   search?: string | null;
-  stale?: boolean | null;
   sortBy?: StickySortBy;
   sortDirection?: StickySortDirection;
 }
 
 export interface StickySessionEntry {
   key: string;
-  kind: "prompt_cache";
   account_id: string;
   account_name: string | null;
   updated_at: number;
-  expires_at: number;
   age_ms: number;
-  stale: boolean;
+  status: StickySessionStatus;
 }
 
 export interface StickySessionPage {
   entries: StickySessionEntry[];
   total: number;
-  stalePromptCacheCount: number;
+  activeCount: number;
 }
 
-export function getSticky(key: string, ttlMs: number, now: number): string | null {
+export function getSticky(key: string): StickyBinding | null {
   const row = orm
-    .select({
-      accountId: stickySessions.accountId,
-      updatedAt: stickySessions.updatedAt,
-    })
+    .select({ accountId: stickySessions.accountId, status: stickySessions.status })
     .from(stickySessions)
     .where(eq(stickySessions.key, key))
     .get();
-  if (!row) return null;
-  if (now - row.updatedAt > ttlMs) {
-    orm.delete(stickySessions).where(eq(stickySessions.key, key)).run();
-    return null;
-  }
-  return row.accountId;
+  return row ? { accountId: row.accountId, status: stickyStatus(row.status) } : null;
 }
 
-export function setSticky(key: string, accountId: string, now: number): void {
+/** Atomically claim a chat. Existing active and blocked rows always win. */
+export function claimSticky(key: string, accountId: string, now: number): StickyBinding {
   orm
     .insert(stickySessions)
-    .values({ key, accountId, updatedAt: now })
-    .onConflictDoUpdate({
-      target: stickySessions.key,
-      set: { accountId, updatedAt: now },
-    })
+    .values({ key, accountId, updatedAt: now, status: "active" })
+    .onConflictDoNothing({ target: stickySessions.key })
     .run();
+
+  const claimed = getSticky(key);
+  if (!claimed) throw new Error("sticky claim failed");
+  return claimed;
 }
 
-/** Refresh TTL without changing the pinned account. */
+/** Record activity without changing the pinned account. */
 export function touchSticky(key: string, now: number): void {
-  orm.update(stickySessions).set({ updatedAt: now }).where(eq(stickySessions.key, key)).run();
-}
-
-export function cleanupSticky(ttlMs: number, now: number): void {
-  orm.delete(stickySessions).where(lt(stickySessions.updatedAt, now - ttlMs)).run();
+  orm
+    .update(stickySessions)
+    .set({ updatedAt: now })
+    .where(and(eq(stickySessions.key, key), eq(stickySessions.status, "active")))
+    .run();
 }
 
 export function listStickySessions(filter: StickySessionFilter): StickySessionPage {
   const where = buildStickyWhere(filter);
   const total = countStickyWhere(where);
-  const stalePromptCacheCount = countStickyWhere(buildStickyWhere({ ...filter, stale: true }));
+  const activeCount = countStickyWhere({
+    clause: `(${where.clause}) AND sticky_sessions.status = 'active'`,
+    params: where.params,
+  });
   const rows = queryStickyRows<StickySessionRow>(
     `
       SELECT
         sticky_sessions.key AS key,
         sticky_sessions.account_id AS accountId,
         accounts.name AS accountName,
-        sticky_sessions.updated_at AS updatedAt
+        sticky_sessions.updated_at AS updatedAt,
+        sticky_sessions.status AS status
       FROM sticky_sessions
       LEFT JOIN accounts ON accounts.id = sticky_sessions.account_id
       WHERE ${where.clause}
@@ -94,34 +93,37 @@ export function listStickySessions(filter: StickySessionFilter): StickySessionPa
   );
 
   return {
-    entries: rows.map((row) => toStickySessionEntry(row, filter.ttlMs, filter.now)),
+    entries: rows.map((row) => toStickySessionEntry(row, filter.now)),
     total,
-    stalePromptCacheCount,
+    activeCount,
   };
 }
 
-export function deleteStickySessions(keys: string[]): number {
+export function blockStickySessions(keys: string[], now: number): number {
   const uniqueKeys = Array.from(new Set(keys.filter((key) => key.length > 0)));
   if (uniqueKeys.length === 0) return 0;
 
-  const stmt = db.prepare("DELETE FROM sticky_sessions WHERE key = ?");
-  let deleted = 0;
+  const stmt = db.prepare(
+    "UPDATE sticky_sessions SET status = 'blocked', updated_at = ? WHERE key = ? AND status <> 'blocked'",
+  );
+  let blocked = 0;
   const tx = db.transaction((values: string[]) => {
     for (const key of values) {
-      deleted += Number(stmt.run(key).changes ?? 0);
+      blocked += Number(stmt.run(now, key).changes ?? 0);
     }
   });
   tx(uniqueKeys);
-  return deleted;
+  return blocked;
 }
 
-export function deleteFilteredStickySessions(filter: StickySessionFilter): number {
+export function blockFilteredStickySessions(filter: StickySessionFilter): number {
   const where = buildStickyWhere(filter);
   const result = db
     .query(
       `
-        DELETE FROM sticky_sessions
-        WHERE key IN (
+        UPDATE sticky_sessions
+        SET status = 'blocked', updated_at = ?
+        WHERE status <> 'blocked' AND key IN (
           SELECT sticky_sessions.key
           FROM sticky_sessions
           LEFT JOIN accounts ON accounts.id = sticky_sessions.account_id
@@ -129,26 +131,18 @@ export function deleteFilteredStickySessions(filter: StickySessionFilter): numbe
         )
       `,
     )
-    .run(...where.params);
+    .run(filter.now, ...where.params);
   return Number(result.changes ?? 0);
 }
 
-export function purgeStaleStickySessions(ttlMs: number, now: number): number {
-  const result = db.query("DELETE FROM sticky_sessions WHERE updated_at < ?").run(now - ttlMs);
-  return Number(result.changes ?? 0);
-}
-
-function toStickySessionEntry(row: StickySessionRow, ttlMs: number, now: number): StickySessionEntry {
-  const ageMs = Math.max(0, now - row.updatedAt);
+function toStickySessionEntry(row: StickySessionRow, now: number): StickySessionEntry {
   return {
     key: row.key,
-    kind: "prompt_cache",
     account_id: row.accountId,
     account_name: row.accountName,
     updated_at: row.updatedAt,
-    expires_at: row.updatedAt + ttlMs,
-    age_ms: ageMs,
-    stale: ageMs > ttlMs,
+    age_ms: Math.max(0, now - row.updatedAt),
+    status: stickyStatus(row.status),
   };
 }
 
@@ -169,16 +163,7 @@ function buildStickyWhere(filter: StickySessionFilter): StickyWhere {
 
   if (filter.search?.trim()) {
     conditions.push("sticky_sessions.key LIKE ?");
-    const term = `%${filter.search.trim()}%`;
-    params.push(term);
-  }
-
-  if (filter.stale === true) {
-    conditions.push("sticky_sessions.updated_at < ?");
-    params.push(filter.now - filter.ttlMs);
-  } else if (filter.stale === false) {
-    conditions.push("sticky_sessions.updated_at >= ?");
-    params.push(filter.now - filter.ttlMs);
+    params.push(`%${filter.search.trim()}%`);
   }
 
   return { clause: conditions.join(" AND "), params };
@@ -222,8 +207,13 @@ interface StickySessionRow {
   accountId: string;
   accountName: string | null;
   updatedAt: number;
+  status: string;
 }
 
 interface CountRow {
   count: number;
+}
+
+function stickyStatus(value: string): StickySessionStatus {
+  return value === "active" ? "active" : "blocked";
 }

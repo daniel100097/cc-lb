@@ -6,19 +6,11 @@ import {
 } from "./auth";
 import { handleTrpc } from "./api/server";
 import { startUsageRefresher } from "./anthropic/usage-refresher";
-import { getSettings } from "./db/settings";
-import { cleanupSticky } from "./db/sticky";
 import { handleProxy } from "./proxy/handler";
 
 const PORT = Number(process.env.PORT ?? 8484);
 const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
 const TELEMETRY_PATHS = new Set(["/api/event_logging/batch", "/api/system/package-manager"]);
-const STICKY_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-
-cleanupSticky(getSettings().stickyTtlMs, Date.now());
-setInterval(() => {
-  cleanupSticky(getSettings().stickyTtlMs, Date.now());
-}, STICKY_CLEANUP_INTERVAL_MS);
 
 startUsageRefresher();
 

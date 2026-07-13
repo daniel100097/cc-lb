@@ -1,5 +1,5 @@
 import { accountDeviceId, accountRealUuid } from "../anthropic/account-config";
-import { resolveUserAgentOverride } from "../anthropic/claude-version";
+import { installedClaudeVersion, matchesInstalledClaudeVersion } from "../anthropic/claude-version";
 import { API_BASE } from "../anthropic/constants";
 import { prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
 import { getValidAccessToken } from "../anthropic/token-manager";
@@ -8,7 +8,7 @@ import { isAvailable, toState, type AccountState, type StrategyName } from "../b
 import { bumpRequestCount, listAccounts, updateAccount, type Account } from "../db/accounts";
 import { validateApiKeySecret, type ApiKey } from "../db/api-keys";
 import { getSettings, type Settings } from "../db/settings";
-import { getSticky, setSticky, touchSticky } from "../db/sticky";
+import { claimSticky, getSticky, touchSticky } from "../db/sticky";
 import { logRequest, updateRequestLogUsage } from "../db/request-log";
 import { applyCooldown, clearRateLimit, parseRateLimit, recordMetadata } from "./rate-limit";
 import { gatedUsedPercent } from "./usage-gate";
@@ -59,11 +59,18 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
     return new Response(responseBody, { status: 200, headers: responseHeaders });
   }
 
+  const stickyKey = deriveStickyKey(req.headers);
+  if (!stickyKey) return claudeCodeRequired();
+  if (!matchesInstalledClaudeVersion(req.headers.get("user-agent"))) return claudeVersionRequired();
+
   const now = Date.now();
   const proxyAuth = authenticateProxyRequest(req, settings, now);
   if (proxyAuth.response) return proxyAuth.response;
 
-  // Buffer body once so it can be replayed across failover attempts.
+  let stickyBinding = getSticky(stickyKey);
+  if (stickyBinding?.status === "blocked") return sessionBlocked();
+
+  // Buffer once for parsing, identity patching, and exact-byte forwarding.
   const bodyBuf = req.method === "GET" || req.method === "HEAD" ? null : await req.arrayBuffer();
   const rawRequest = settings.rawHttpLoggingEnabled ? rawRequestSnapshot(req, url, bodyBuf) : null;
   let parsedBody: unknown = null;
@@ -81,13 +88,23 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
     const assigned = new Set(proxyAuth.apiKey.assigned_account_ids);
     accounts = accounts.filter((account) => assigned.has(account.id));
   }
-  const stickyKey = settings.stickySessions ? deriveStickyKey(req.headers, parsedBody) : null;
   const bodySignals = scanBodyIdentity(parsedBody);
-  const stickyPinnedId = stickyKey ? getSticky(stickyKey, settings.stickyTtlMs, now) : null;
+  let stickyPinnedId = stickyBinding?.accountId ?? null;
+  let ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
+
+  // Claim real chat sessions before any upstream work. This makes the first
+  // eligible account the permanent home, including when simultaneous first
+  // requests arrive or that account's first attempt fails.
+  if (!stickyPinnedId && ordered[0]) {
+    stickyBinding = claimSticky(stickyKey, ordered[0].id, now);
+    if (stickyBinding.status === "blocked") return sessionBlocked();
+    stickyPinnedId = stickyBinding.accountId;
+    ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
+  }
+
   const exhaustedAccounts = stickyPinnedId
     ? accounts.filter((account) => account.id === stickyPinnedId)
     : accounts;
-  const ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
   if (ordered.length === 0) {
     return poolExhausted(exhaustedAccounts, now);
   }
@@ -111,20 +128,14 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       rawRequest,
     });
     if (res === null) {
-      // Client already gone — don't burn the remaining accounts on failover.
+      // Stop immediately when the client is already gone.
       if (req.signal.aborted) return new Response(null, { status: 499 });
       failoverAttempt += 1;
       continue;
     }
 
-    // Success — pin new sticky sessions, or refresh the TTL for an existing pin.
-    if (stickyKey) {
-      if (stickyPinnedId === account.id) {
-        touchSticky(stickyKey, Date.now());
-      } else {
-        setSticky(stickyKey, account.id, Date.now());
-      }
-    }
+    // Success only records activity; the account binding never changes.
+    touchSticky(stickyKey, Date.now());
     maybeRollSession(account, settings, Date.now());
     bumpRequestCount(account.id, Date.now());
     return res;
@@ -134,7 +145,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
 }
 
 /**
- * Returns a Response on success, or null to signal "try the next account".
+ * Returns a Response on success, or null when the pinned attempt failed.
  */
 async function attempt(
   account: Account,
@@ -176,7 +187,6 @@ async function attempt(
     req.headers,
     accessToken,
     deviceIdOverride,
-    resolveUserAgentOverride(settings.userAgentOverride),
     settings.stripForwardedHeaders,
   );
   const outboundBody = buildAttemptBody(bodyBuf, account, context, deviceIdOverride);
@@ -395,7 +405,7 @@ function orderAccounts(
   // An existing sticky pin is hard affinity: the session must not fall through
   // to any other account. If the pinned account is unavailable, there is no
   // candidate for this request.
-  if (settings.stickySessions && stickyKey && stickyPinnedId) {
+  if (stickyKey && stickyPinnedId) {
     if (!available.some((s) => s.id === stickyPinnedId)) return [];
     const account = byId.get(stickyPinnedId);
     return account ? [account] : [];
@@ -553,8 +563,8 @@ interface IdentityPatch {
  * Per-attempt outbound body: patch device-id slots to the account's override and
  * account-uuid slots to the routed account's id — each only where the client
  * already sent that slot (including inside the metadata.user_id JSON envelope).
- * The shared bodyBuf stays pristine so failover to other accounts replays the
- * original.
+ * The shared bodyBuf stays pristine so account-specific rewriting never
+ * mutates the original request.
  */
 function buildAttemptBody(
   bodyBuf: ArrayBuffer | null,
@@ -912,6 +922,39 @@ function proxyAuthError(status: 401 | 403, error: string, message: string): Resp
   const headers: Record<string, string> = {};
   if (status === 401) headers["www-authenticate"] = "Bearer";
   return Response.json({ error, message }, { status, headers });
+}
+
+function claudeCodeRequired(): Response {
+  return Response.json(
+    {
+      error: "claude_code_required",
+      message: "Only Claude Code requests with x-claude-code-session-id are accepted.",
+    },
+    { status: 403 },
+  );
+}
+
+function claudeVersionRequired(): Response {
+  const version = installedClaudeVersion();
+  return Response.json(
+    {
+      error: "claude_code_version_mismatch",
+      message: version
+        ? `Claude Code ${version} is required to match the server.`
+        : "The server's Claude Code version is unavailable.",
+    },
+    { status: 403 },
+  );
+}
+
+function sessionBlocked(): Response {
+  return Response.json(
+    {
+      error: "session_blocked",
+      message: "This Claude Code session was blocked by an operator.",
+    },
+    { status: 403 },
+  );
 }
 
 function elapsedMs(startedAt: number): number {

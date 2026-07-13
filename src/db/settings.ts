@@ -3,26 +3,20 @@ import { settings as settingsTable } from "./schema";
 
 export interface Settings {
   strategy: string;
-  stickySessions: boolean;
-  stickyTtlMs: number;
   apiKeyAuthEnabled: boolean;
   rawHttpLoggingEnabled: boolean;
   rateLimitBackoffBaseMs: number;
   rateLimitBackoffMaxMs: number;
   sessionDurationMs: number;
   overloadRetryMax: number;
-  /** Accounts at/above this % of the 5h session or weekly window get no new sticky sessions. */
+  /** Accounts at/above this % of the 5h session or weekly window get no new chats. */
   newSessionUsageCutoffPercent: number;
-  /** Sent upstream instead of the client's user-agent; empty passes the client value through, "auto" tracks the bundled Claude Code version. */
-  userAgentOverride: string;
   /** Remove forwarded-for/via/real-ip headers before sending upstream. */
   stripForwardedHeaders: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   strategy: "priority",
-  stickySessions: true,
-  stickyTtlMs: 5 * 60 * 60 * 1000,
   apiKeyAuthEnabled: false,
   rawHttpLoggingEnabled: false,
   rateLimitBackoffBaseMs: 30_000,
@@ -30,7 +24,6 @@ export const DEFAULT_SETTINGS: Settings = {
   sessionDurationMs: 5 * 60 * 60 * 1000,
   overloadRetryMax: 2,
   newSessionUsageCutoffPercent: 95,
-  userAgentOverride: "",
   stripForwardedHeaders: false,
 };
 
@@ -38,9 +31,6 @@ export function getSettings(): Settings {
   const stored = Object.fromEntries(orm.select().from(settingsTable).all().map((row) => [row.key, row.value]));
   return {
     strategy: stored.strategy ?? DEFAULT_SETTINGS.strategy,
-    stickySessions:
-      stored.stickySessions === undefined ? DEFAULT_SETTINGS.stickySessions : stored.stickySessions === "true",
-    stickyTtlMs: toStoredNumber(stored.stickyTtlMs, DEFAULT_SETTINGS.stickyTtlMs),
     apiKeyAuthEnabled:
       stored.apiKeyAuthEnabled === undefined
         ? DEFAULT_SETTINGS.apiKeyAuthEnabled
@@ -63,7 +53,6 @@ export function getSettings(): Settings {
       stored.newSessionUsageCutoffPercent,
       DEFAULT_SETTINGS.newSessionUsageCutoffPercent,
     ),
-    userAgentOverride: stored.userAgentOverride ?? DEFAULT_SETTINGS.userAgentOverride,
     stripForwardedHeaders:
       stored.stripForwardedHeaders === undefined
         ? DEFAULT_SETTINGS.stripForwardedHeaders
@@ -73,8 +62,6 @@ export function getSettings(): Settings {
 
 export function patchSettings(patch: Partial<Settings>): Settings {
   if (patch.strategy !== undefined) upsertSetting("strategy", patch.strategy);
-  if (patch.stickySessions !== undefined) upsertSetting("stickySessions", String(patch.stickySessions));
-  if (patch.stickyTtlMs !== undefined) upsertSetting("stickyTtlMs", String(patch.stickyTtlMs));
   if (patch.apiKeyAuthEnabled !== undefined) upsertSetting("apiKeyAuthEnabled", String(patch.apiKeyAuthEnabled));
   if (patch.rawHttpLoggingEnabled !== undefined) {
     upsertSetting("rawHttpLoggingEnabled", String(patch.rawHttpLoggingEnabled));
@@ -90,7 +77,6 @@ export function patchSettings(patch: Partial<Settings>): Settings {
   if (patch.newSessionUsageCutoffPercent !== undefined) {
     upsertSetting("newSessionUsageCutoffPercent", String(patch.newSessionUsageCutoffPercent));
   }
-  if (patch.userAgentOverride !== undefined) upsertSetting("userAgentOverride", patch.userAgentOverride.trim());
   if (patch.stripForwardedHeaders !== undefined) {
     upsertSetting("stripForwardedHeaders", String(patch.stripForwardedHeaders));
   }

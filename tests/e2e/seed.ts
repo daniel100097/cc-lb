@@ -2,9 +2,8 @@ import { rmSync } from "node:fs";
 
 const dbPath = process.env.DB_PATH ?? "/tmp/cc-lb-e2e.db";
 process.env.DB_PATH = dbPath;
-// Seed and the e2e server run as separate processes and neither is passed
-// CLAUDE_ACCOUNTS_DIR, so both fall back to the same ./data/claude-accounts
-// root — write the seeded credentials where the server will read them.
+// Seed and server are separate processes; Playwright gives both the same
+// isolated account root.
 const accountsDir = process.env.CLAUDE_ACCOUNTS_DIR ?? "./data/claude-accounts";
 process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
@@ -15,6 +14,7 @@ for (const suffix of ["", "-wal", "-shm"]) {
 const { createAccount, updateAccount } = await import("../../src/db/accounts");
 const { logRequest, updateRequestLogUsage } = await import("../../src/db/request-log");
 const { patchSettings } = await import("../../src/db/settings");
+const { claimSticky } = await import("../../src/db/sticky");
 const { seedAccountCredentials } = await import("../../src/testing/seed-credentials");
 
 const now = Date.now();
@@ -45,6 +45,7 @@ updateAccount(limited.id, {
   rate_limit_remaining: 0,
   rate_limit_reset: now + 5 * 60 * 1000,
   consecutive_rate_limits: 1,
+  usage_checked_at: now,
 });
 
 // No credentials file is seeded for this account: the server derives
@@ -63,7 +64,10 @@ updateAccount(primary.id, {
   rate_limit_status: "ok",
   rate_limit_remaining: 84,
   rate_limit_reset: now + 30 * 60 * 1000,
+  usage_checked_at: now,
 });
+
+claimSticky("sid:e2e-chat-session", primary.id, now - 15_000);
 
 const okLogId = logRequest({
   accountId: primary.id,
@@ -101,7 +105,5 @@ logRequest({
 
 patchSettings({
   strategy: "priority",
-  stickySessions: true,
-  stickyTtlMs: 5 * 60 * 60 * 1000,
   overloadRetryMax: 2,
 });

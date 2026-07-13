@@ -43,7 +43,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.201",
+    "@anthropic-ai/claude-code": "2.1.207",
     "@hookform/resolvers": "^5.4.0",
     "@tanstack/react-query": "^5.101.2",
     "@trpc/client": "^11.18.0",

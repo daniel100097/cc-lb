@@ -22,14 +22,12 @@ export const FORWARDED_HEADERS = [
  * Device-id override is header-scoped: it only rewrites an x-device-id header the
  * client already sent. Body device-id patching happens per-attempt in the proxy handler.
  *
- * User-agent override replaces the client's user-agent wholesale (e.g. to present
- * the Claude Code version installed on the gateway host regardless of the client).
+ * The validated Claude Code user-agent is forwarded unchanged.
  */
 export function prepareRequestHeaders(
   incoming: Headers,
   accessToken: string,
   deviceIdOverride?: string | null,
-  userAgentOverride?: string | null,
   stripForwardedHeaders = false,
 ): Headers {
   const h = new Headers(incoming);
@@ -45,11 +43,6 @@ export function prepareRequestHeaders(
   if (deviceIdOverride && incoming.has(DEVICE_ID_HEADER)) {
     h.set(DEVICE_ID_HEADER, deviceIdOverride);
   }
-  const userAgent = userAgentOverride?.trim();
-  if (userAgent) {
-    h.set("user-agent", userAgent);
-  }
-
   // Ensure the OAuth beta flag is present.
   const beta = h.get("anthropic-beta");
   if (beta) {

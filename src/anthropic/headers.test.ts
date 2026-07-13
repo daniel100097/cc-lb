@@ -41,21 +41,9 @@ describe("Anthropic headers", () => {
     expect(overridden.get(DEVICE_ID_HEADER)).toBe("account-device");
   });
 
-  test("replaces the client user-agent when an override is set", () => {
-    const headers = prepareRequestHeaders(
-      new Headers({ "user-agent": "claude-cli/1.0.0 (external, cli)" }),
-      "token",
-      null,
-      "claude-cli/2.0.14 (external, cli)",
-    );
-    expect(headers.get("user-agent")).toBe("claude-cli/2.0.14 (external, cli)");
-  });
-
-  test("passes the client user-agent through when the override is empty or blank", () => {
+  test("passes the validated client user-agent through unchanged", () => {
     const incoming = new Headers({ "user-agent": "claude-cli/1.0.0 (external, cli)" });
     expect(prepareRequestHeaders(incoming, "token").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
-    expect(prepareRequestHeaders(incoming, "token", null, "").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
-    expect(prepareRequestHeaders(incoming, "token", null, "   ").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
   });
 
   test("strips forwarded headers only when enabled", () => {
@@ -73,7 +61,7 @@ describe("Anthropic headers", () => {
     expect(kept.get("x-forwarded-for")).toBe("203.0.113.7");
     expect(kept.get("via")).toBe("1.1 nginx");
 
-    const stripped = prepareRequestHeaders(incoming(), "token", null, null, true);
+    const stripped = prepareRequestHeaders(incoming(), "token", null, true);
     for (const header of FORWARDED_HEADERS) {
       expect(stripped.get(header)).toBeNull();
     }

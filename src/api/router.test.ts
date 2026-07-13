@@ -16,6 +16,7 @@ process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 const { appRouter } = await import("./router");
 const { createAccount, deleteAccount, listAccounts, updateAccount } = await import("../db/accounts");
 const { logRequest, updateRequestLogUsage } = await import("../db/request-log");
+const { claimSticky, getSticky } = await import("../db/sticky");
 const { resetClaudeCodeLoginSessionsForTests } = await import("../anthropic/claude-code-cli");
 const { resetProbeStateForTests } = await import("../anthropic/account-probe");
 const { seedAccountCredentials } = await import("../testing/seed-credentials");
@@ -219,11 +220,27 @@ describe("appRouter settings", () => {
     expect(settings.rawHttpLoggingEnabled).toBe(true);
     await caller.settings.update({ rawHttpLoggingEnabled: false });
   });
+});
 
-  test("updates and clears the user-agent override", async () => {
-    const updated = await caller.settings.update({ userAgentOverride: "  claude-cli/2.0.14 (external, cli)  " });
-    expect(updated.userAgentOverride).toBe("claude-cli/2.0.14 (external, cli)");
-    const cleared = await caller.settings.update({ userAgentOverride: "" });
-    expect(cleared.userAgentOverride).toBe("");
+describe("appRouter sticky sessions", () => {
+  test("blocks selected and filtered sessions while rejecting an unfiltered bulk block", async () => {
+    const account = createAccount({ name: "Sticky router owner" });
+    const prefix = `sid:router-block-${process.pid}-`;
+    claimSticky(`${prefix}a`, account.id, 1_000);
+    claimSticky(`${prefix}b`, account.id, 2_000);
+
+    const selected = await caller.stickySessions.blockSelected({ keys: [`${prefix}a`] });
+    expect(selected.blockedCount).toBe(1);
+    expect(getSticky(`${prefix}a`)?.status).toBe("blocked");
+    await expect(caller.stickySessions.blockFiltered({})).rejects.toThrow(
+      "At least one sticky-session filter is required",
+    );
+
+    const filtered = await caller.stickySessions.blockFiltered({ search: `${prefix}b` });
+    expect(filtered.blockedCount).toBe(1);
+    const page = await caller.stickySessions.list({ search: prefix });
+    expect(page.total).toBe(2);
+    expect(page.activeCount).toBe(0);
+    expect(page.entries.every((entry) => entry.status === "blocked")).toBe(true);
   });
 });

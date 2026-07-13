@@ -4,7 +4,7 @@ Local load balancer and dashboard for Claude Code OAuth accounts.
 
 cc-lb gives Claude Code one local Anthropic-compatible endpoint while routing
 requests across a pool of Claude Code accounts. It handles account login,
-token refresh, rate-limit failover, sticky sessions, API keys, request logs, and
+token refresh, permanent chat affinity, API keys, request logs, and
 basic usage analytics.
 
 This project is intended for private/local deployments. The `data/` directory
@@ -13,13 +13,13 @@ store.
 
 ## Features
 
-- `/v1/*` proxy endpoint for Claude Code and Anthropic SDK traffic.
+- `/v1/*` proxy endpoint restricted to the bundled Claude Code version.
 - Web dashboard for accounts, routing settings, API keys, sticky sessions, and
   request logs.
 - Account onboarding through the normal `claude` CLI login flow.
 - Token refresh and usage probes driven by `claude` in `tmux`.
-- Automatic failover on expired tokens, unauthorized accounts, network errors,
-  overloaded responses, and rate limits.
+- Permanent per-chat account binding across errors, rate limits, restarts, and
+  idle periods.
 - Routing strategies: `priority`, `round_robin`, `noisy_round_robin`,
   `least_used`, `weighted_random`, and `session_reset_drain`.
 - Optional proxy API-key enforcement with account scoping and model filters.
@@ -127,13 +127,25 @@ Incoming proxy requests go to `/v1/*`. cc-lb selects an available account,
 rewrites the outbound auth header to that account's OAuth token, and forwards
 the request to Anthropic.
 
+Every `/v1/*` request must include a non-empty
+`x-claude-code-session-id` header and a `claude-cli/<version>` User-Agent whose
+version exactly matches the bundled `@anthropic-ai/claude-code` dependency on
+the server. Missing identities, non-Claude clients, and version mismatches are
+rejected before authentication, body processing, or account selection. The
+local Claude telemetry routes remain exempt. These checks are compatibility
+gates, not authentication; enable proxy API-key enforcement when access control
+is required.
+
 The proxy also preserves Claude Code identity signals per account where the
 client already sent them, including `x-device-id`, `device_id`, and
 `account_uuid` fields.
 
-On rate limits, token errors, 401s, 529 overloads, and network failures, cc-lb
-records the outcome and tries the next eligible account. Sticky sessions can pin
-related traffic to the same account for a configurable TTL.
+The first eligible account selected for a session is claimed before its first
+upstream request and remains that chat's permanent home. cc-lb never moves the
+session to another account after a token error, 401, rate limit, overload, or
+network failure; the request fails while its account is unavailable. An
+operator can permanently block a session from the Sticky dashboard. Blocking
+keeps a tombstone, so that session ID is rejected and can never be reassigned.
 
 ## Configuration
 

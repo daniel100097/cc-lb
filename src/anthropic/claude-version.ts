@@ -1,36 +1,28 @@
 import { readFileSync } from "node:fs";
 
-let cachedUserAgent: string | null | undefined;
+let cachedVersion: string | null | undefined;
 
-/**
- * User-agent matching the bundled Claude Code CLI (the same package the login
- * flow runs), e.g. "claude-cli/2.1.199 (external, sdk-ts, agent-sdk/0.3.199)".
- * Null when the package cannot be resolved.
- */
-export function installedClaudeUserAgent(): string | null {
-  if (cachedUserAgent === undefined) cachedUserAgent = readInstalledUserAgent();
-  return cachedUserAgent;
+export function installedClaudeVersion(): string | null {
+  if (cachedVersion === undefined) cachedVersion = readInstalledVersion();
+  return cachedVersion;
 }
 
-/**
- * Effective user-agent override for upstream requests: empty disables the
- * override, the "auto" sentinel tracks the bundled Claude Code version, and
- * anything else is sent verbatim.
- */
-export function resolveUserAgentOverride(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (trimmed.toLowerCase() === "auto") return installedClaudeUserAgent();
-  return trimmed;
+export function claudeUserAgentVersion(userAgent: string | null): string | null {
+  if (!userAgent) return null;
+  return /^claude-cli\/([^\s()]+)/.exec(userAgent.trim())?.[1] ?? null;
 }
 
-function readInstalledUserAgent(): string | null {
+export function matchesInstalledClaudeVersion(userAgent: string | null): boolean {
+  const installed = installedClaudeVersion();
+  return installed !== null && claudeUserAgentVersion(userAgent) === installed;
+}
+
+function readInstalledVersion(): string | null {
   try {
     const pkgPath = Bun.resolveSync("@anthropic-ai/claude-code/package.json", import.meta.dir);
     const parsed: unknown = JSON.parse(readFileSync(pkgPath, "utf8"));
     const version = isRecord(parsed) ? parsed.version : undefined;
-    if (typeof version !== "string" || version.length === 0) return null;
-    return `claude-cli/${version} (external, sdk-ts, agent-sdk/0.3.199)`;
+    return typeof version === "string" && version.length > 0 ? version : null;
   } catch {
     return null;
   }

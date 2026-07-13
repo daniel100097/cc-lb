@@ -1,18 +1,28 @@
 import { describe, expect, test } from "bun:test";
-import { installedClaudeUserAgent, resolveUserAgentOverride } from "./claude-version";
+import {
+  claudeUserAgentVersion,
+  installedClaudeVersion,
+  matchesInstalledClaudeVersion,
+} from "./claude-version";
 
 describe("claude-version", () => {
-  test("builds the user-agent from the bundled Claude Code package version", () => {
-    expect(installedClaudeUserAgent()).toMatch(
-      /^claude-cli\/\d+\.\d+\.\d+ \(external, sdk-ts, agent-sdk\/0\.3\.199\)$/,
-    );
+  test("reads the bundled Claude Code package version", () => {
+    expect(installedClaudeVersion()).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  test("resolves the override: empty disables, auto tracks the bundled version, literals pass through", () => {
-    expect(resolveUserAgentOverride("")).toBeNull();
-    expect(resolveUserAgentOverride("   ")).toBeNull();
-    expect(resolveUserAgentOverride("auto")).toBe(installedClaudeUserAgent());
-    expect(resolveUserAgentOverride(" AUTO ")).toBe(installedClaudeUserAgent());
-    expect(resolveUserAgentOverride("claude-cli/2.1.198 (external, cli)")).toBe("claude-cli/2.1.198 (external, cli)");
+  test("extracts Claude Code versions from supported user-agent variants", () => {
+    expect(claudeUserAgentVersion("claude-cli/2.1.201 (external, cli)")).toBe("2.1.201");
+    expect(claudeUserAgentVersion("claude-cli/2.1.201 (external, sdk-ts, agent-sdk/0.3.199)")).toBe("2.1.201");
+    expect(claudeUserAgentVersion("other/2.1.201")).toBeNull();
+    expect(claudeUserAgentVersion(null)).toBeNull();
+  });
+
+  test("requires the incoming version to match the bundled version", () => {
+    const installed = installedClaudeVersion();
+    expect(installed).not.toBeNull();
+    expect(matchesInstalledClaudeVersion(`claude-cli/${installed} (external, cli)`)).toBe(true);
+    expect(matchesInstalledClaudeVersion(`claude-cli/${installed} (external, sdk-ts, agent-sdk/0.3.199)`)).toBe(true);
+    expect(matchesInstalledClaudeVersion("claude-cli/0.0.0 (external, cli)")).toBe(false);
+    expect(matchesInstalledClaudeVersion("curl/8.0")).toBe(false);
   });
 });

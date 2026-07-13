@@ -14,43 +14,13 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await expect(page.getByText("1 / 3", { exact: true })).toBeVisible();
   });
 
-  test("imports credentials and pauses the imported account", async ({ page }) => {
-    await page.goto("/accounts");
-
-    await expect(page.getByRole("heading", { name: "Accounts" })).toBeVisible();
-    await page.getByRole("button", { name: "Add Account" }).click();
-
-    const dialog = page.getByRole("dialog", { name: "Add Claude account" });
-    await dialog.getByLabel("Name").fill("Imported E2E");
-    await dialog.getByLabel("Priority").fill("9");
-    await dialog.getByRole("textbox", { name: "Credentials JSON" }).fill(
-      JSON.stringify({
-        claudeAiOauth: {
-          accessToken: "imported-access",
-          refreshToken: "imported-refresh",
-          expiresAt: Date.now() + 86_400_000,
-          scopes: ["user:inference"],
-        },
-      }),
-    );
-    await dialog.getByRole("button", { name: "Import" }).click();
-
-    await expect(page.getByText("Account imported")).toBeVisible();
-    const row = page.getByRole("row").filter({ hasText: "Imported E2E" });
-    await expect(row).toBeVisible();
-    await row.getByTitle("Pause").click();
-    await expect(page.getByText("Account paused")).toBeVisible();
-    await expect(row.getByText("Paused")).toBeVisible();
-  });
-
-  test("adds Claude Code accounts through the CLI flow and reauths refresh-token accounts", async ({ page }) => {
+  test("adds and pauses an account through the Claude Code CLI flow", async ({ page }) => {
     await page.goto("/accounts");
 
     await page.getByRole("button", { name: "Add Account" }).click();
     const dialog = page.getByRole("dialog", { name: "Add Claude account" });
     await dialog.getByLabel("Name").fill("CLI E2E");
     await dialog.getByLabel("Device ID override").fill("device-e2e");
-    await dialog.getByRole("tab", { name: "Claude Code CLI" }).click();
     await dialog.getByRole("button", { name: "Generate login link" }).click();
     await expect(
       dialog.getByText("https://claude.com/cai/oauth/authorize?code=true&client_id=e2e&state=playwright", { exact: true }).first(),
@@ -64,15 +34,9 @@ test.describe("cc-lb dashboard with seeded data", () => {
     const tokenRow = page.getByRole("row").filter({ hasText: "CLI E2E" });
     await expect(tokenRow).toBeVisible();
     await expect(tokenRow.getByText("device device-e2e")).toBeVisible();
-    await expect(tokenRow.getByTitle("Re-authenticate")).toHaveCount(1);
-
-    await page.getByRole("row").filter({ hasText: "Needs reauth" }).getByTitle("Re-authenticate").click();
-    const reauthPopupPromise = page.waitForEvent("popup");
-    await page.getByRole("button", { name: "Generate login link" }).click();
-    const reauthPopup = await reauthPopupPromise;
-    await reauthPopup.close();
-    await expect(page.getByText("https://claude.ai/oauth/authorize")).toBeVisible();
-    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await tokenRow.getByTitle("Pause").click();
+    await expect(page.getByText("Account paused")).toBeVisible();
+    await expect(tokenRow.getByText("Paused")).toBeVisible();
   });
 
   test("filters and expands request log rows", async ({ page }) => {
@@ -106,6 +70,20 @@ test.describe("cc-lb dashboard with seeded data", () => {
     await expect(page.getByRole("row").filter({ hasText: "Telemetry" })).toBeVisible();
     await page.getByRole("row").filter({ hasText: "Telemetry" }).first().click();
     await expect(page.getByText("POST /api/event_logging/batch")).toBeVisible();
+  });
+
+  test("permanently blocks a chat session from the Sticky page", async ({ page }) => {
+    await page.goto("/sticky");
+
+    const row = page.getByRole("row").filter({ hasText: "sid:e2e-chat-session" });
+    await expect(row.getByText("Active", { exact: true })).toBeVisible();
+    await row.getByRole("button", { name: "Block", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Block chat session" });
+    await expect(dialog).toContainText("permanently rejected and cannot be reassigned");
+    await dialog.getByRole("button", { name: "Block Session" }).click();
+
+    await expect(page.getByText("Blocked 1 chat sessions")).toBeVisible();
+    await expect(row.getByText("Blocked", { exact: true }).first()).toBeVisible();
   });
 
   test("saves routing settings", async ({ page }) => {

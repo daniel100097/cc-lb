@@ -82,7 +82,6 @@ type SettingsValue = RouterOutput["settings"]["get"];
 type RequestEntry = RouterOutput["requests"]["list"]["entries"][number];
 type SettingsFormState = SettingsValue & { apiKeyAuthEnabled?: boolean };
 type NumberSettingsKey =
-  | "stickyTtlMs"
   | "rateLimitBackoffBaseMs"
   | "rateLimitBackoffMaxMs"
   | "sessionDurationMs"
@@ -153,25 +152,21 @@ type ApiKeyUsage7d = {
 
 type StickySessionEntry = {
   key: string;
-  kind: string;
+  status: "active" | "blocked";
   displayName?: string;
   accountId?: string | null;
   accountName?: string | null;
   createdAt?: string | number | null;
   updatedAt: string | number;
-  expiresAt?: string | number | null;
-  isStale?: boolean;
-  stale?: boolean;
   ageMs?: number;
 };
 
-type StickySessionTarget = { key: string; kind: string };
+type StickySessionTarget = { key: string };
 type StickySessionsResponse = {
   entries?: StickySessionEntry[];
   total?: number;
+  activeCount?: number;
   hasMore?: boolean;
-  stalePromptCacheCount?: number;
-  staleCount?: number;
 };
 
 const strategyNameSet = new Set<string>([
@@ -667,10 +662,9 @@ function StickySessionsPage() {
   const [sortDir, setSortDir] = useState<StickySortDir>("desc");
   const [offset, setOffset] = useState(0);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [deleteTarget, setDeleteTarget] = useState<StickySessionTarget | null>(null);
-  const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
-  const [deleteFilteredOpen, setDeleteFilteredOpen] = useState(false);
-  const [purgeOpen, setPurgeOpen] = useState(false);
+  const [blockTarget, setBlockTarget] = useState<StickySessionTarget | null>(null);
+  const [blockSelectedOpen, setBlockSelectedOpen] = useState(false);
+  const [blockFilteredOpen, setBlockFilteredOpen] = useState(false);
   const params = useMemo<Parameters<typeof trpc.stickySessions.list.useQuery>[0]>(
     () => ({
       accountQuery,
@@ -688,41 +682,34 @@ function StickySessionsPage() {
     refetchOnWindowFocus: true,
   });
   const sessions = normalizeStickySessions(sessionsQuery.data);
-  const visibleIds = useMemo(() => new Set(sessions.entries.map(stickySessionRowId)), [sessions.entries]);
+  const blockableEntries = useMemo(() => sessions.entries.filter((entry) => entry.status !== "blocked"), [sessions.entries]);
+  const visibleIds = useMemo(() => new Set(blockableEntries.map(stickySessionRowId)), [blockableEntries]);
   const selectedTargets = useMemo(
-    () => sessions.entries.filter((entry) => selectedIds.includes(stickySessionRowId(entry))).map(stickySessionTarget),
-    [selectedIds, sessions.entries],
+    () => blockableEntries.filter((entry) => selectedIds.includes(stickySessionRowId(entry))).map(stickySessionTarget),
+    [blockableEntries, selectedIds],
   );
   const selectedCount = selectedTargets.length;
-  const allVisibleSelected = sessions.entries.length > 0 && selectedCount === sessions.entries.length;
+  const allVisibleSelected = blockableEntries.length > 0 && selectedCount === blockableEntries.length;
   const someVisibleSelected = selectedCount > 0 && !allVisibleSelected;
   const hasFilters = accountQuery.trim().length > 0 || keyQuery.trim().length > 0;
-  const deleteSessions = trpc.stickySessions.deleteSelected.useMutation({
-    onError: (error) => toast.error(error.message || "Failed to delete sticky sessions"),
+  const blockSessions = trpc.stickySessions.blockSelected.useMutation({
+    onError: (error) => toast.error(error.message || "Failed to block chat sessions"),
     onSuccess: async (result) => {
       setSelectedIds([]);
       await sessionsQuery.refetch();
-      toast.success(`Deleted ${compactNumber(result.deletedCount ?? Math.max(1, selectedTargets.length))} sticky sessions`);
+      toast.success(`Blocked ${compactNumber(result.blockedCount ?? Math.max(1, selectedTargets.length))} chat sessions`);
     },
   });
-  const deleteFiltered = trpc.stickySessions.deleteFiltered.useMutation({
-    onError: (error) => toast.error(error.message || "Failed to delete filtered sticky sessions"),
+  const blockFiltered = trpc.stickySessions.blockFiltered.useMutation({
+    onError: (error) => toast.error(error.message || "Failed to block filtered chat sessions"),
     onSuccess: async (result) => {
       setSelectedIds([]);
       setOffset(0);
       await sessionsQuery.refetch();
-      toast.success(`Deleted ${compactNumber(result.deletedCount ?? 0)} filtered sessions`);
+      toast.success(`Blocked ${compactNumber(result.blockedCount ?? 0)} filtered chat sessions`);
     },
   });
-  const purgeStale = trpc.stickySessions.purgeStale.useMutation({
-    onError: (error) => toast.error(error.message || "Failed to purge stale sticky sessions"),
-    onSuccess: async (result) => {
-      setSelectedIds([]);
-      await sessionsQuery.refetch();
-      toast.success(`Purged ${compactNumber(result.deletedCount ?? 0)} stale sessions`);
-    },
-  });
-  const busy = deleteSessions.isPending || deleteFiltered.isPending || purgeStale.isPending;
+  const busy = blockSessions.isPending || blockFiltered.isPending;
 
   function updateSort(nextSortBy: StickySortBy) {
     if (sortBy !== nextSortBy) {
@@ -743,13 +730,13 @@ function StickySessionsPage() {
   function toggleAllVisible(checked: boolean) {
     setSelectedIds((current) => {
       const hidden = current.filter((id) => !visibleIds.has(id));
-      return checked ? [...hidden, ...sessions.entries.map(stickySessionRowId)] : hidden;
+      return checked ? [...hidden, ...blockableEntries.map(stickySessionRowId)] : hidden;
     });
   }
 
   return (
     <div className="animate-fade-in-up flex flex-col gap-6">
-      <PageHeading title="Sticky" description="Inspect and clear account affinity mappings created by sticky session routing." />
+      <PageHeading title="Sticky" description="Every Claude Code chat stays on its first account; operator-blocked session IDs remain permanently rejected." />
       <AlertMessage message={sessionsQuery.error && !sessionsQuery.data ? "Sticky session procedures are unavailable or still loading." : null} />
       <section className="space-y-4 rounded-xl border bg-card p-4">
         <div className="grid gap-3 lg:grid-cols-2">
@@ -780,22 +767,18 @@ function StickySessionsPage() {
         </div>
         <div className="flex flex-col gap-3 rounded-lg border px-3 py-2 lg:flex-row lg:items-center lg:justify-between">
           <div className="grid gap-2 text-sm sm:grid-cols-3">
-            <CountPill label="Visible" value={sessions.total} />
-            <CountPill label="Stale" value={sessions.stalePromptCacheCount} />
+            <CountPill label="Active" value={sessions.activeCount} />
+            <CountPill label="Blocked" value={Math.max(0, sessions.total - sessions.activeCount)} />
             <CountPill label="Selected" value={selectedCount} />
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Button type="button" variant="outline" size="sm" disabled={busy || !hasFilters || sessions.total === 0} onClick={() => setDeleteFilteredOpen(true)}>
-              <Trash2 className="size-4" />
-              Delete Filtered
+            <Button type="button" variant="outline" size="sm" disabled={busy || !hasFilters || sessions.activeCount === 0} onClick={() => setBlockFilteredOpen(true)}>
+              <Ban className="size-4" />
+              Block Filtered
             </Button>
-            <Button type="button" variant="destructive" size="sm" disabled={busy || selectedCount === 0} onClick={() => setDeleteSelectedOpen(true)}>
-              <Trash2 className="size-4" />
-              Delete Selected
-            </Button>
-            <Button type="button" variant="outline" size="sm" disabled={busy || sessions.stalePromptCacheCount === 0} onClick={() => setPurgeOpen(true)}>
-              <RefreshCw className="size-4" />
-              Purge Stale
+            <Button type="button" variant="destructive" size="sm" disabled={busy || selectedCount === 0} onClick={() => setBlockSelectedOpen(true)}>
+              <Ban className="size-4" />
+              Block Selected
             </Button>
           </div>
         </div>
@@ -807,7 +790,7 @@ function StickySessionsPage() {
           />
         ) : (
           <div className="rounded-xl border">
-            <Table className="min-w-[940px] table-fixed">
+            <Table className="min-w-[700px] table-fixed">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="w-12 pl-4">
@@ -821,40 +804,37 @@ function StickySessionsPage() {
                   <TableHead className="w-[28%] text-xs uppercase text-muted-foreground">
                     <SortableHeader active={sortBy === "key"} dir={sortDir} onClick={() => updateSort("key")}>Key</SortableHeader>
                   </TableHead>
-                  <TableHead className="w-36 text-xs uppercase text-muted-foreground">Kind</TableHead>
                   <TableHead className="w-[22%] text-xs uppercase text-muted-foreground">
                     <SortableHeader active={sortBy === "account"} dir={sortDir} onClick={() => updateSort("account")}>Account</SortableHeader>
                   </TableHead>
+                  <TableHead className="w-28 text-xs uppercase text-muted-foreground">Status</TableHead>
                   <TableHead className="w-40 text-xs uppercase text-muted-foreground">
                     <SortableHeader active={sortBy === "updated_at"} dir={sortDir} onClick={() => updateSort("updated_at")}>Updated</SortableHeader>
                   </TableHead>
-                  <TableHead className="w-36 text-xs uppercase text-muted-foreground">Expiry</TableHead>
                   <TableHead className="w-24 pr-4 text-right text-xs uppercase text-muted-foreground">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {sessions.entries.map((entry) => {
                   const selected = selectedIds.includes(stickySessionRowId(entry));
+                  const blocked = entry.status === "blocked";
                   return (
                     <TableRow key={stickySessionRowId(entry)} data-state={selected ? "selected" : undefined}>
                       <TableCell className="pl-4">
                         <Checkbox
                           aria-label={`Select sticky session ${entry.key}`}
                           checked={selected}
-                          disabled={busy}
+                          disabled={busy || blocked}
                           onCheckedChange={(checked) => toggleSelected(entry, checked === true)}
                         />
                       </TableCell>
                       <TableCell className="truncate font-mono text-xs" title={entry.key}>{entry.key}</TableCell>
-                      <TableCell><Badge variant="outline">{stickyKindLabel(entry.kind)}</Badge></TableCell>
                       <TableCell className="truncate text-xs">{entry.displayName}</TableCell>
+                      <TableCell><Badge variant={blocked ? "destructive" : "outline"}>{blocked ? "Blocked" : "Active"}</Badge></TableCell>
                       <TableCell className="text-xs text-muted-foreground">{formatDateish(entry.updatedAt)}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {entry.isStale ? <Badge variant="secondary">Stale</Badge> : entry.expiresAt ? formatDateish(entry.expiresAt) : "Durable"}
-                      </TableCell>
                       <TableCell className="pr-4 text-right">
-                        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setDeleteTarget(stickySessionTarget(entry))}>
-                          Remove
+                        <Button type="button" variant="ghost" size="sm" disabled={busy || blocked} onClick={() => setBlockTarget(stickySessionTarget(entry))}>
+                          {blocked ? "Blocked" : "Block"}
                         </Button>
                       </TableCell>
                     </TableRow>
@@ -874,42 +854,33 @@ function StickySessionsPage() {
         />
       </section>
       <ConfirmDialog
-        open={Boolean(deleteTarget)}
-        title="Remove sticky session"
-        description={deleteTarget ? `${stickyKindLabel(deleteTarget.kind)} mapping ${deleteTarget.key} will stop pinning future requests.` : undefined}
-        confirmLabel="Delete"
-        confirmDisabled={!deleteTarget || busy}
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        open={Boolean(blockTarget)}
+        title="Block chat session"
+        description={blockTarget ? `Session ${blockTarget.key} will be permanently rejected and cannot be reassigned.` : undefined}
+        confirmLabel="Block Session"
+        confirmDisabled={!blockTarget || busy}
+        onOpenChange={(open) => !open && setBlockTarget(null)}
         onConfirm={() => {
-          if (deleteTarget) deleteSessions.mutate({ keys: [deleteTarget.key] });
+          if (blockTarget) blockSessions.mutate({ keys: [blockTarget.key] });
         }}
       />
       <ConfirmDialog
-        open={deleteSelectedOpen}
-        title="Delete selected sticky sessions"
-        description={`Delete ${compactNumber(selectedCount)} selected sticky sessions?`}
-        confirmLabel="Delete Selected"
+        open={blockSelectedOpen}
+        title="Block selected chat sessions"
+        description={`Permanently block ${compactNumber(selectedCount)} selected chat sessions?`}
+        confirmLabel="Block Selected"
         confirmDisabled={selectedCount === 0 || busy}
-        onOpenChange={setDeleteSelectedOpen}
-        onConfirm={() => deleteSessions.mutate({ keys: selectedTargets.map((target) => target.key) })}
+        onOpenChange={setBlockSelectedOpen}
+        onConfirm={() => blockSessions.mutate({ keys: selectedTargets.map((target) => target.key) })}
       />
       <ConfirmDialog
-        open={deleteFilteredOpen}
-        title="Delete filtered sticky sessions"
-        description={`Delete ${compactNumber(sessions.total)} sticky sessions matching the current filters?`}
-        confirmLabel="Delete Filtered"
-        confirmDisabled={!hasFilters || sessions.total === 0 || busy}
-        onOpenChange={setDeleteFilteredOpen}
-        onConfirm={() => deleteFiltered.mutate({ accountQuery, search: keyQuery })}
-      />
-      <ConfirmDialog
-        open={purgeOpen}
-        title="Purge stale prompt-cache mappings"
-        description="Only stale mappings will be removed. Durable sticky rows remain intact."
-        confirmLabel="Purge"
-        confirmDisabled={sessions.stalePromptCacheCount === 0 || busy}
-        onOpenChange={setPurgeOpen}
-        onConfirm={() => purgeStale.mutate()}
+        open={blockFilteredOpen}
+        title="Block filtered chat sessions"
+        description={`Permanently block ${compactNumber(sessions.activeCount)} active chat sessions matching the current filters?`}
+        confirmLabel="Block Filtered"
+        confirmDisabled={!hasFilters || sessions.activeCount === 0 || busy}
+        onOpenChange={setBlockFilteredOpen}
+        onConfirm={() => blockFiltered.mutate({ accountQuery, search: keyQuery })}
       />
     </div>
   );
@@ -950,7 +921,7 @@ function RequestsPage() {
 
   return (
     <div className="animate-fade-in-up flex flex-col gap-6">
-      <PageHeading title="Requests" description="Recent proxy attempts, failover context, token usage, and latency." />
+      <PageHeading title="Requests" description="Recent proxy attempts, account placement, token usage, and latency." />
       <section className="rounded-xl border bg-card p-4">
         <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1fr_auto]">
           <FilterSelect
@@ -1065,7 +1036,7 @@ function SettingsPage() {
 
   return (
     <div className="animate-fade-in-up flex flex-col gap-6">
-      <PageHeading title="Settings" description="Tune routing strategy, sticky sessions, and cooldown behavior." />
+      <PageHeading title="Settings" description="Tune new-chat placement, account cooldowns, and proxy behavior." />
       {settings.data ? (
         <SettingsForm settings={settings.data} strategies={strategies.data ?? []} />
       ) : (
@@ -1695,7 +1666,6 @@ function RequestsTable({
             <th className="px-2 py-3 font-medium">Tokens</th>
             <th className="px-2 py-3 font-medium">Cost est.</th>
             <th className="px-2 py-3 font-medium">Latency</th>
-            <th className="px-2 py-3 text-right font-medium">Attempt</th>
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -1714,11 +1684,10 @@ function RequestsTable({
                 <td className="px-2 py-3">{tokenSummary(entry)}</td>
                 <td className="px-2 py-3">{currency(entry.costUsd)}</td>
                 <td className="px-2 py-3">{latencyMs(entry.latencyMs ?? entry.totalMs)}</td>
-                <td className="px-2 py-3 text-right">{entry.failoverAttempt > 0 ? entry.failoverAttempt : "-"}</td>
               </tr>
               {expandedId === entry.id ? (
                 <tr>
-                  <td className="bg-muted/30 px-2 py-3 text-xs" colSpan={9}>
+                  <td className="bg-muted/30 px-2 py-3 text-xs" colSpan={8}>
                     <RequestDetails entry={entry} />
                   </td>
                 </tr>
@@ -2141,7 +2110,6 @@ function SettingsForm({
 }) {
   const [form, setForm] = useState<SettingsFormState>(() => settingsToFormState(settings));
   const utils = trpc.useUtils();
-  const installedUserAgent = trpc.settings.installedUserAgent.useQuery();
   const updateSettings = trpc.settings.update.useMutation({
     onSuccess: async (next) => {
       setForm(settingsToFormState(next));
@@ -2190,15 +2158,8 @@ function SettingsForm({
             </option>
           ))}
         </select>
-        <p className="text-muted-foreground text-sm">{currentStrategy?.description ?? "Select how accounts are ordered before failover."}</p>
+        <p className="text-muted-foreground text-sm">{currentStrategy?.description ?? "Select how new chats choose their permanent account."}</p>
       </div>
-      <label className="flex items-center justify-between rounded-lg border p-3">
-        <span>
-          <span className="block font-medium">Sticky sessions</span>
-          <span className="text-muted-foreground text-sm">Pin related Claude Code requests to the same account.</span>
-        </span>
-        <Switch checked={form.stickySessions} onCheckedChange={(checked) => setForm((current) => ({ ...current, stickySessions: checked }))} />
-      </label>
       <label className={cn("flex items-center justify-between rounded-lg border p-3", !settingsSupportsApiKeyAuth(settings) && "opacity-60")}>
         <span>
           <span className="block font-medium">API key authentication</span>
@@ -2223,7 +2184,6 @@ function SettingsForm({
           onCheckedChange={(checked) => setForm((current) => ({ ...current, rawHttpLoggingEnabled: checked }))}
         />
       </label>
-      <SettingNumber label="Sticky TTL" value={form.stickyTtlMs} onChange={(value) => updateNumber("stickyTtlMs", value)} helper={durationMs(form.stickyTtlMs)} />
       <SettingNumber
         label="Cooldown base"
         value={form.rateLimitBackoffBaseMs}
@@ -2247,36 +2207,8 @@ function SettingsForm({
         label="New-session usage cutoff"
         value={form.newSessionUsageCutoffPercent}
         onChange={(value) => updateNumber("newSessionUsageCutoffPercent", value)}
-        helper="% used of the 5h or weekly window — accounts at or above receive no new sticky sessions"
+        helper="% used of the 5h or weekly window — accounts at or above receive no new chats"
       />
-      <div className="grid gap-2 rounded-lg border p-3 lg:col-span-2">
-        <div className="flex items-center justify-between gap-3">
-          <Label htmlFor="user-agent-override">User-Agent override</Label>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!installedUserAgent.data?.userAgent}
-            onClick={() =>
-              setForm((current) => ({ ...current, userAgentOverride: installedUserAgent.data?.userAgent ?? "" }))
-            }
-          >
-            Use installed version
-          </Button>
-        </div>
-        <Input
-          id="user-agent-override"
-          value={form.userAgentOverride ?? ""}
-          onChange={(event) => setForm((current) => ({ ...current, userAgentOverride: event.target.value }))}
-          placeholder={installedUserAgent.data?.userAgent ?? "claude-cli/2.1.199 (external, sdk-ts, agent-sdk/0.3.199)"}
-        />
-        <span className="text-muted-foreground text-xs">
-          Sent upstream instead of the client&apos;s User-Agent. Enter <code>auto</code> to always track the gateway&apos;s
-          bundled Claude Code version
-          {installedUserAgent.data?.userAgent ? ` (currently ${installedUserAgent.data.userAgent})` : ""}. Leave empty to
-          pass the client value through.
-        </span>
-      </div>
       <label className="flex items-center justify-between rounded-lg border p-3 lg:col-span-2">
         <span>
           <span className="block font-medium">Strip forwarded headers</span>
@@ -2554,28 +2486,21 @@ function normalizeStickySessions(data: RouterOutput["stickySessions"]["list"] | 
   const entries = (data?.entries ?? []).map((entry) => ({
     ...entry,
     displayName: entry.accountName ?? entry.accountId ?? "Unknown account",
-    isStale: entry.stale,
-    expiresAt: entry.expiresAt,
   }));
   return {
     entries,
     total: data?.total ?? 0,
+    activeCount: data?.activeCount ?? 0,
     hasMore: data?.hasMore ?? false,
-    stalePromptCacheCount: data?.stalePromptCacheCount ?? 0,
-    staleCount: data?.stalePromptCacheCount ?? 0,
   };
 }
 
 function stickySessionRowId(entry: StickySessionEntry): string {
-  return `${entry.kind}:${entry.key}`;
+  return entry.key;
 }
 
 function stickySessionTarget(entry: StickySessionEntry): StickySessionTarget {
-  return { key: entry.key, kind: entry.kind };
-}
-
-function stickyKindLabel(kind: string): string {
-  return labelFromKey(kind);
+  return { key: entry.key };
 }
 
 function toStickyBackendSortBy(value: StickySortBy): StickyBackendSortBy {
