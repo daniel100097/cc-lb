@@ -1,6 +1,7 @@
 import { OAUTH_BETA_HEADER } from "./constants";
 
 export const DEVICE_ID_HEADER = "x-device-id";
+export const CLIENT_IP_HEADER = "client-ip";
 
 /** Headers that reveal the client's IP or proxy chain to upstream. */
 export const FORWARDED_HEADERS = [
@@ -29,6 +30,7 @@ export function prepareRequestHeaders(
   accessToken: string,
   accountDeviceId?: string | null,
   stripForwardedHeaders = false,
+  serverPublicIp?: string | null,
 ): Headers {
   const h = new Headers(incoming);
 
@@ -37,6 +39,12 @@ export function prepareRequestHeaders(
 
   if (stripForwardedHeaders) {
     for (const header of FORWARDED_HEADERS) h.delete(header);
+  }
+  if (incoming.has(CLIENT_IP_HEADER)) {
+    // Never trust a client-supplied IP. Preserve the direct request shape by
+    // rewriting this field only when the client actually sent it.
+    if (serverPublicIp) h.set(CLIENT_IP_HEADER, serverPublicIp);
+    else h.delete(CLIENT_IP_HEADER);
   }
 
   h.set("authorization", `Bearer ${accessToken}`);

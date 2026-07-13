@@ -34,6 +34,7 @@ const IDENTITY_HEADERS = [
   "authorization",
   "x-api-key",
   "x-device-id",
+  "client-ip",
   "anthropic-beta",
   "anthropic-version",
   "anthropic-dangerous-direct-browser-access",

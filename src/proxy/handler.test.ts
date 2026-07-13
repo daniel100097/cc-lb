@@ -12,13 +12,14 @@ process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
 const { createAccount, getAccount, listAccounts, updateAccount } = await import("../db/accounts");
 const { installedClaudeVersion } = await import("../anthropic/claude-version");
-const { DEVICE_ID_HEADER } = await import("../anthropic/headers");
+const { CLIENT_IP_HEADER, DEVICE_ID_HEADER } = await import("../anthropic/headers");
 const { listRequests } = await import("../db/request-log");
 const { patchSettings } = await import("../db/settings");
 const { blockStickySessions, claimSticky, getSticky, getStickyIdentity } = await import("../db/sticky");
 const { handleProxy: handleProxyRequest } = await import("./handler");
 const { seedAccountCredentials } = await import("../testing/seed-credentials");
 const { accountConfigDir } = await import("../anthropic/account-config");
+const { resetServerPublicIpCacheForTests } = await import("../server-public-ip");
 
 const installedVersion = installedClaudeVersion();
 if (!installedVersion) throw new Error("Claude Code test dependency is missing");
@@ -1226,6 +1227,98 @@ describe("handleProxy", () => {
       );
     } finally {
       restore();
+    }
+  });
+
+  test("replaces a client-supplied client-ip with the server public IP", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const account = createAccount({ name: "Server public IP" });
+    seedAccountCredentials(account.id, {
+      accessToken: "server-ip-access",
+      refreshToken: "server-ip-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    patchSettings({ stripForwardedHeaders: true });
+    resetServerPublicIpCacheForTests();
+
+    const originalFetch = globalThis.fetch;
+    const outboundHeaders: Headers[] = [];
+    let resolverCalls = 0;
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const target = input instanceof Request ? input.url : String(input);
+        if (target === "https://one.one.one.one/cdn-cgi/trace") {
+          resolverCalls += 1;
+          return new Response("fl=test\nip=203.0.113.99\nloc=ZZ\n");
+        }
+        outboundHeaders.push(new Headers(init?.headers));
+        return Response.json({ usage: { input_tokens: 1, output_tokens: 2 } });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [CLIENT_IP_HEADER]: "198.51.100.25",
+            "x-forwarded-for": "198.51.100.25",
+            "x-claude-code-session-id": "rewrite-client-ip",
+          },
+          body: JSON.stringify({ model: "claude-client-ip", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(resolverCalls).toBe(1);
+      expect(outboundHeaders).toHaveLength(1);
+      expect(outboundHeaders[0]?.get(CLIENT_IP_HEADER)).toBe("203.0.113.99");
+      expect(outboundHeaders[0]?.get("x-forwarded-for")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetServerPublicIpCacheForTests();
+      patchSettings({ stripForwardedHeaders: false });
+    }
+  });
+
+  test("fails closed when client-ip is present but the server public IP cannot be resolved", async () => {
+    resetServerPublicIpCacheForTests();
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = Object.assign(
+      async () => {
+        calls += 1;
+        return new Response("unavailable", { status: 503 });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [CLIENT_IP_HEADER]: "198.51.100.25",
+            "x-claude-code-session-id": "unresolved-client-ip",
+          },
+          body: JSON.stringify({ model: "claude-client-ip-unresolved", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(503);
+      expect((await response.json()).error).toBe("server_public_ip_unavailable");
+      expect(calls).toBe(1);
+      expect(getSticky("sid:unresolved-client-ip")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetServerPublicIpCacheForTests();
     }
   });
 

@@ -2217,8 +2217,8 @@ function SettingsForm({
         <span>
           <span className="block font-medium">Strip forwarded headers</span>
           <span className="text-muted-foreground text-sm">
-            Remove Forwarded, X-Forwarded-*, X-Real-IP, Via and similar headers before sending upstream so client and
-            proxy-chain IPs are not exposed to Anthropic.
+            Remove Forwarded, X-Forwarded-*, X-Real-IP, True-Client-IP, CF-Connecting-IP, and Via. A client-supplied
+            client-ip is handled separately and rewritten to the server public IP.
           </span>
         </span>
         <Switch

@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { OAUTH_BETA_HEADER } from "./constants";
-import { DEVICE_ID_HEADER, FORWARDED_HEADERS, prepareRequestHeaders, sanitizeResponseHeaders } from "./headers";
+import {
+  CLIENT_IP_HEADER,
+  DEVICE_ID_HEADER,
+  FORWARDED_HEADERS,
+  prepareRequestHeaders,
+  sanitizeResponseHeaders,
+} from "./headers";
 
 describe("Anthropic headers", () => {
   test("strips client credentials and injects OAuth bearer token", () => {
@@ -46,12 +52,43 @@ describe("Anthropic headers", () => {
     expect(prepareRequestHeaders(incoming, "token").get("user-agent")).toBe("claude-cli/1.0.0 (external, cli)");
   });
 
+  test("rewrites client-ip only when the client sent the field", () => {
+    const rewritten = prepareRequestHeaders(
+      new Headers({ [CLIENT_IP_HEADER]: "198.51.100.20" }),
+      "token",
+      null,
+      false,
+      "203.0.113.40",
+    );
+    expect(rewritten.get(CLIENT_IP_HEADER)).toBe("203.0.113.40");
+
+    const rewrittenWhileStrippingForwarded = prepareRequestHeaders(
+      new Headers({ [CLIENT_IP_HEADER]: "198.51.100.20", "x-forwarded-for": "198.51.100.20" }),
+      "token",
+      null,
+      true,
+      "203.0.113.40",
+    );
+    expect(rewrittenWhileStrippingForwarded.get(CLIENT_IP_HEADER)).toBe("203.0.113.40");
+    expect(rewrittenWhileStrippingForwarded.get("x-forwarded-for")).toBeNull();
+
+    const absent = prepareRequestHeaders(new Headers(), "token", null, false, "203.0.113.40");
+    expect(absent.get(CLIENT_IP_HEADER)).toBeNull();
+
+    const unresolved = prepareRequestHeaders(
+      new Headers({ [CLIENT_IP_HEADER]: "198.51.100.20" }),
+      "token",
+    );
+    expect(unresolved.get(CLIENT_IP_HEADER)).toBeNull();
+  });
+
   test("strips forwarded headers only when enabled", () => {
     const incoming = () =>
       new Headers({
         "x-forwarded-for": "203.0.113.7",
         "x-forwarded-proto": "https",
         "x-real-ip": "203.0.113.7",
+        [CLIENT_IP_HEADER]: "203.0.113.7",
         via: "1.1 nginx",
         forwarded: "for=203.0.113.7",
         "content-type": "application/json",

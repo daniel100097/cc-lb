@@ -176,6 +176,13 @@ instead of allowing an unrewritten device fingerprint to reach Anthropic.
 Malformed JSON and duplicate object keys are also rejected before a session is
 claimed or request traffic is sent upstream.
 
+`client-ip` is never synthesized when the client omits it. If the client sends
+that header, cc-lb discards its value, resolves the server's current public
+egress IP, and forwards only the resolved value. A resolution failure returns
+`503 server_public_ip_unavailable` before the session is claimed or account
+credentials are read. This field remains synchronized even when the separate
+forwarded-header stripping setting is enabled.
+
 A previously unseen session is pinned to an account as `pending` when a quota
 or count-token preflight establishes its binding. The first substantive
 `/v1/messages` request must contain no top-level `role: "assistant"` message;

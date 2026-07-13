@@ -1,13 +1,19 @@
 import { accountDeviceId, accountRealUuid } from "../anthropic/account-config";
 import { installedClaudeVersion, matchesInstalledClaudeVersion } from "../anthropic/claude-version";
 import { API_BASE } from "../anthropic/constants";
-import { DEVICE_ID_HEADER, prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
+import {
+  CLIENT_IP_HEADER,
+  DEVICE_ID_HEADER,
+  prepareRequestHeaders,
+  sanitizeResponseHeaders,
+} from "../anthropic/headers";
 import { getValidAccessToken } from "../anthropic/token-manager";
 import { isStrategyName, selectAccount } from "../balancer/strategies";
 import { isAvailable, toState, type AccountState, type StrategyName } from "../balancer/types";
 import { bumpRequestCount, listAccounts, updateAccount, type Account } from "../db/accounts";
 import { validateApiKeySecret, type ApiKey } from "../db/api-keys";
 import { getSettings, type Settings } from "../db/settings";
+import { resolveServerPublicIp } from "../server-public-ip";
 import { dashboardPort } from "../ports";
 import {
   bindStickyClientDeviceId,
@@ -77,6 +83,12 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
 
   let stickyBinding = getStickyIdentity(stickyKey);
   if (stickyBinding?.status === "blocked") return sessionBlocked();
+
+  let serverPublicIp: string | null = null;
+  if (req.headers.has(CLIENT_IP_HEADER)) {
+    serverPublicIp = await resolveServerPublicIp();
+    if (!serverPublicIp) return serverPublicIpUnavailable();
+  }
 
   // Buffer once for parsing, identity patching, and exact-byte forwarding.
   const bodyBuf = req.method === "GET" || req.method === "HEAD" ? null : await req.arrayBuffer();
@@ -231,6 +243,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       bodySignals,
       accountUuid,
       deviceId,
+      serverPublicIp,
       sessionId,
       wantsStream: isRecord(parsedBody) && parsedBody.stream === true,
       rawRequest,
@@ -292,6 +305,7 @@ async function attempt(
     accessToken,
     context.deviceId,
     settings.stripForwardedHeaders,
+    context.serverPublicIp,
   );
   const outboundBody = buildAttemptBody(bodyBuf, context);
   const rawUpstreamRequest = context.rawRequest
@@ -574,6 +588,7 @@ interface AttemptContext {
   bodySignals: BodyIdentitySignals;
   accountUuid: string;
   deviceId: string | null;
+  serverPublicIp: string | null;
   sessionId: string;
   wantsStream: boolean;
   rawRequest: RawRequestSnapshot | null;
@@ -1286,6 +1301,16 @@ function claudeVersionRequired(): Response {
         : "The server's Claude Code version is unavailable.",
     },
     { status: 403 },
+  );
+}
+
+function serverPublicIpUnavailable(): Response {
+  return Response.json(
+    {
+      error: "server_public_ip_unavailable",
+      message: "The server public IP could not be resolved; client-ip was not forwarded.",
+    },
+    { status: 503 },
   );
 }
 
