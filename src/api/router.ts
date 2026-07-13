@@ -255,9 +255,9 @@ export const appRouter = router({
 
     delete: publicProcedure.input(z.object({ id: z.string().min(1) }).strict()).mutation(({ input }) => {
       void killTmuxSession(probeTmuxSessionName(input.id)).catch(() => {});
-      deleteAccountConfigDir(input.id);
-      deleteAccount(input.id);
-      return { ok: true };
+      const blockedSessions = deleteAccount(input.id, Date.now());
+      const configRemoved = deleteAccountConfigDir(input.id);
+      return { ok: true, blockedSessions, configRemoved };
     }),
   }),
 
@@ -390,6 +390,7 @@ export const appRouter = router({
         entries: page.entries.map(toPublicStickySession),
         total: page.total,
         activeCount: page.activeCount,
+        pendingCount: page.pendingCount,
         hasMore: (input?.offset ?? 0) + page.entries.length < page.total,
       };
     }),

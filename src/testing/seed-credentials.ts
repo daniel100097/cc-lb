@@ -4,6 +4,7 @@
 // process.env.CLAUDE_ACCOUNTS_DIR to a temp dir before using this.
 
 import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { accountConfigDir, accountCredentialsPath } from "../anthropic/account-config";
 
 export interface SeedCredentialsOptions {
@@ -12,6 +13,8 @@ export interface SeedCredentialsOptions {
   /** ms epoch; defaults to 1h in the future (well past the 30-min safety window). */
   expiresAt?: number;
   scopes?: string[];
+  /** Real accountUuid fixture; defaults to accountId. Null deliberately omits identity. */
+  accountUuid?: string | null;
 }
 
 export function seedAccountCredentials(accountId: string, options: SeedCredentialsOptions = {}): void {
@@ -25,4 +28,8 @@ export function seedAccountCredentials(accountId: string, options: SeedCredentia
     },
   };
   writeFileSync(accountCredentialsPath(accountId), JSON.stringify(payload));
+  const accountUuid = options.accountUuid === undefined ? accountId : options.accountUuid;
+  if (accountUuid !== null) {
+    writeFileSync(join(accountConfigDir(accountId), ".claude.json"), JSON.stringify({ accountUuid }));
+  }
 }

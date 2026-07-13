@@ -14,9 +14,9 @@ process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
 process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
 const { appRouter } = await import("./router");
-const { createAccount, deleteAccount, listAccounts, updateAccount } = await import("../db/accounts");
+const { createAccount, deleteAccount, getAccount, listAccounts, updateAccount } = await import("../db/accounts");
 const { logRequest, updateRequestLogUsage } = await import("../db/request-log");
-const { claimSticky, getSticky } = await import("../db/sticky");
+const { claimPendingSticky, claimSticky, getSticky } = await import("../db/sticky");
 const { resetClaudeCodeLoginSessionsForTests } = await import("../anthropic/claude-code-cli");
 const { resetProbeStateForTests } = await import("../anthropic/account-probe");
 const { seedAccountCredentials } = await import("../testing/seed-credentials");
@@ -144,6 +144,23 @@ describe("appRouter accounts", () => {
     const updated = await caller.accounts.update({ id: account.id, deviceIdOverride: "" });
     expect(updated.deviceIdOverride).toBeNull();
   });
+
+  test("deleting an account permanently blocks its linked chat sessions", async () => {
+    const deleted = createAccount({ name: "Delete with chats" });
+    const other = createAccount({ name: "Delete fallback forbidden" });
+    const firstKey = `sid:account-delete-${process.pid}-a`;
+    const secondKey = `sid:account-delete-${process.pid}-b`;
+    claimSticky(firstKey, deleted.id, 1_000);
+    claimSticky(secondKey, deleted.id, 2_000);
+
+    const result = await caller.accounts.delete({ id: deleted.id });
+
+    expect(result).toEqual({ ok: true, blockedSessions: 2, configRemoved: true });
+    expect(getAccount(deleted.id)).toBeNull();
+    expect(getSticky(firstKey)).toEqual({ accountId: deleted.id, status: "blocked" });
+    expect(getSticky(secondKey)).toEqual({ accountId: deleted.id, status: "blocked" });
+    expect(claimSticky(firstKey, other.id, 3_000)).toEqual({ accountId: deleted.id, status: "blocked" });
+  });
 });
 
 describe("appRouter requests", () => {
@@ -223,6 +240,18 @@ describe("appRouter settings", () => {
 });
 
 describe("appRouter sticky sessions", () => {
+  test("lists pending sessions separately from active sessions", async () => {
+    const account = createAccount({ name: "Pending router owner" });
+    const key = `sid:router-pending-${process.pid}`;
+    claimPendingSticky(key, account.id, 1_000);
+
+    const page = await caller.stickySessions.list({ search: key });
+    expect(page.total).toBe(1);
+    expect(page.activeCount).toBe(0);
+    expect(page.pendingCount).toBe(1);
+    expect(page.entries[0]?.status).toBe("pending");
+  });
+
   test("blocks selected and filtered sessions while rejecting an unfiltered bulk block", async () => {
     const account = createAccount({ name: "Sticky router owner" });
     const prefix = `sid:router-block-${process.pid}-`;

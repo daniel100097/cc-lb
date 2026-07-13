@@ -33,9 +33,9 @@ describe("Anthropic headers", () => {
     expect(headers.get(DEVICE_ID_HEADER)).toBeNull();
   });
 
-  test("overrides outbound device id only when the incoming request already has one", () => {
-    const preserved = prepareRequestHeaders(new Headers({ [DEVICE_ID_HEADER]: "client-device" }), "token");
-    expect(preserved.get(DEVICE_ID_HEADER)).toBe("client-device");
+  test("never forwards an unsynchronized client device id", () => {
+    const stripped = prepareRequestHeaders(new Headers({ [DEVICE_ID_HEADER]: "client-device" }), "token");
+    expect(stripped.get(DEVICE_ID_HEADER)).toBeNull();
 
     const overridden = prepareRequestHeaders(new Headers({ [DEVICE_ID_HEADER]: "client-device" }), "token", "account-device");
     expect(overridden.get(DEVICE_ID_HEADER)).toBe("account-device");

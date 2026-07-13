@@ -52,10 +52,11 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       );
 
       CREATE TABLE sticky_sessions (
-        key        TEXT PRIMARY KEY,
-        account_id TEXT NOT NULL,
-        updated_at INTEGER NOT NULL,
-        status     TEXT NOT NULL DEFAULT 'active'
+        key              TEXT PRIMARY KEY,
+        account_id       TEXT NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        status           TEXT NOT NULL DEFAULT 'active',
+        client_device_id TEXT
       );
 
       CREATE TABLE request_log (
@@ -159,6 +160,12 @@ const MIGRATIONS: { id: string; sql: string }[] = [
       ALTER TABLE request_log ADD COLUMN raw_upstream_request_body TEXT;
     `,
   },
+  {
+    id: "008_strict_chat_sessions",
+    sql: `
+      DELETE FROM sticky_sessions WHERE key NOT GLOB 'sid:*';
+    `,
+  },
 ];
 
 function migrate() {
@@ -189,6 +196,8 @@ function migrate() {
   ensureColumn("accounts", "rate_limit_7d_utilization", "REAL");
   ensureColumn("accounts", "rate_limit_7d_reset", "INTEGER");
   ensureColumn("sticky_sessions", "status", "TEXT NOT NULL DEFAULT 'active'");
+  ensureColumn("sticky_sessions", "client_device_id", "TEXT");
+  enforceStrictChatSessionRows();
   dropColumn("accounts", "access_token");
   dropColumn("accounts", "refresh_token");
   dropColumn("accounts", "expires_at");
@@ -198,6 +207,22 @@ function migrate() {
 }
 
 migrate();
+
+/** Remove legacy keys and fail closed for invalid or orphaned chat bindings. */
+export function enforceStrictChatSessionRows(): void {
+  db.exec(`
+    DELETE FROM sticky_sessions WHERE key NOT GLOB 'sid:*';
+    UPDATE sticky_sessions
+    SET status = 'blocked'
+    WHERE status <> 'blocked'
+      AND (
+        status NOT IN ('active', 'pending')
+        OR NOT EXISTS (
+          SELECT 1 FROM accounts WHERE accounts.id = sticky_sessions.account_id
+        )
+      );
+  `);
+}
 
 function ensureColumn(table: string, column: string, definition: string): void {
   const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq, sql } from "drizzle-orm";
-import { orm } from "./client";
+import { db, orm } from "./client";
 import { accounts as accountsTable } from "./schema";
 
 export type AccountAuthType = "oauth_refresh" | "claude_code_oauth_token";
@@ -110,8 +110,20 @@ export function updateAccount(id: string, patch: AccountPatch): void {
   orm.update(accountsTable).set(values).where(eq(accountsTable.id, id)).run();
 }
 
-export function deleteAccount(id: string): void {
-  orm.delete(accountsTable).where(eq(accountsTable.id, id)).run();
+/** Delete an account while permanently blocking every chat already bound to it. */
+export function deleteAccount(id: string, now = Date.now()): number {
+  let blocked = 0;
+  const tx = db.transaction((accountId: string, blockedAt: number) => {
+    const result = db
+      .query(
+        "UPDATE sticky_sessions SET status = 'blocked', updated_at = ? WHERE account_id = ? AND status <> 'blocked'",
+      )
+      .run(blockedAt, accountId);
+    blocked = Number(result.changes ?? 0);
+    db.query("DELETE FROM accounts WHERE id = ?").run(accountId);
+  });
+  tx(id, now);
+  return blocked;
 }
 
 export function bumpRequestCount(id: string, now: number): void {

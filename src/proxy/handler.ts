@@ -1,14 +1,21 @@
 import { accountDeviceId, accountRealUuid } from "../anthropic/account-config";
 import { installedClaudeVersion, matchesInstalledClaudeVersion } from "../anthropic/claude-version";
 import { API_BASE } from "../anthropic/constants";
-import { prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
+import { DEVICE_ID_HEADER, prepareRequestHeaders, sanitizeResponseHeaders } from "../anthropic/headers";
 import { getValidAccessToken } from "../anthropic/token-manager";
 import { isStrategyName, selectAccount } from "../balancer/strategies";
 import { isAvailable, toState, type AccountState, type StrategyName } from "../balancer/types";
 import { bumpRequestCount, listAccounts, updateAccount, type Account } from "../db/accounts";
 import { validateApiKeySecret, type ApiKey } from "../db/api-keys";
 import { getSettings, type Settings } from "../db/settings";
-import { claimSticky, getSticky, touchSticky } from "../db/sticky";
+import {
+  bindStickyClientDeviceId,
+  claimPendingSticky,
+  getStickyIdentity,
+  promotePendingSticky,
+  touchSticky,
+  type StickyIdentityBinding,
+} from "../db/sticky";
 import { logRequest, updateRequestLogUsage } from "../db/request-log";
 import { applyCooldown, clearRateLimit, parseRateLimit, recordMetadata } from "./rate-limit";
 import { gatedUsedPercent } from "./usage-gate";
@@ -67,19 +74,62 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
   const proxyAuth = authenticateProxyRequest(req, settings, now);
   if (proxyAuth.response) return proxyAuth.response;
 
-  let stickyBinding = getSticky(stickyKey);
+  let stickyBinding = getStickyIdentity(stickyKey);
   if (stickyBinding?.status === "blocked") return sessionBlocked();
 
   // Buffer once for parsing, identity patching, and exact-byte forwarding.
   const bodyBuf = req.method === "GET" || req.method === "HEAD" ? null : await req.arrayBuffer();
   const rawRequest = settings.rawHttpLoggingEnabled ? rawRequestSnapshot(req, url, bodyBuf) : null;
   let parsedBody: unknown = null;
+  let bodyText: string | null = null;
+  let bodyIsJson = false;
+  let bodyHasDuplicateKeys = false;
   if (bodyBuf && bodyBuf.byteLength > 0) {
+    bodyText = new TextDecoder().decode(bodyBuf);
     try {
-      parsedBody = JSON.parse(new TextDecoder().decode(bodyBuf));
+      parsedBody = JSON.parse(bodyText);
+      bodyIsJson = true;
+      bodyHasDuplicateKeys = hasDuplicateJsonKeys(bodyText);
     } catch {
       /* not JSON; fine */
     }
+  }
+
+  const bodySignals = scanBodyIdentity(parsedBody);
+  // Re-read after buffering so an operator block or concurrent first request
+  // that won while this body was being read is observed before admission.
+  stickyBinding = getStickyIdentity(stickyKey) ?? stickyBinding;
+  if (stickyBinding?.status === "blocked") return sessionBlocked();
+
+  const deviceValidation = validateClientDeviceIdentity(
+    req.headers,
+    parsedBody,
+    bodyText,
+    bodyIsJson,
+    bodySignals,
+    stickyBinding,
+  );
+  if (deviceValidation.response) return deviceValidation.response;
+  if (bodyBuf && bodyBuf.byteLength > 0 && !bodyIsJson) return invalidClaudeRequestBody();
+  if (
+    bodyHasDuplicateKeys ||
+    (bodySignals.userIdEnvelope !== null && hasDuplicateJsonKeys(bodySignals.userIdText ?? "")) ||
+    (bodySignals.userIdText?.trimStart().startsWith("{") === true && bodySignals.userIdEnvelope === null)
+  ) {
+    return ambiguousClaudeRequestBody();
+  }
+  if (
+    url.pathname === "/v1/messages" &&
+    req.method === "POST" &&
+    (!bodyIsJson || !isRecord(parsedBody) || !Array.isArray(parsedBody.messages))
+  ) {
+    return invalidClaudeRequestBody();
+  }
+
+  // Assistant history is admissible only after a substantive, history-free
+  // message promoted the durable binding. Preflights never grant admission.
+  if (hasAssistantMessage(parsedBody) && stickyBinding?.status !== "active") {
+    return unknownSessionHistory();
   }
 
   const model = modelFromBody(parsedBody);
@@ -88,18 +138,67 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
     const assigned = new Set(proxyAuth.apiKey.assigned_account_ids);
     accounts = accounts.filter((account) => assigned.has(account.id));
   }
-  const bodySignals = scanBodyIdentity(parsedBody);
+  const sessionId = stickyKey.slice("sid:".length);
+  const hasDeviceIdSignal = req.headers.has(DEVICE_ID_HEADER) || bodySignals.hasDeviceId;
   let stickyPinnedId = stickyBinding?.accountId ?? null;
   let ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
 
-  // Claim real chat sessions before any upstream work. This makes the first
-  // eligible account the permanent home, including when simultaneous first
-  // requests arrive or that account's first attempt fails.
+  // Every new session starts pending. This pins preflights without allowing a
+  // quota/count-token request to make later assistant history look known.
   if (!stickyPinnedId && ordered[0]) {
-    stickyBinding = claimSticky(stickyKey, ordered[0].id, now);
+    stickyBinding = claimPendingSticky(
+      stickyKey,
+      ordered[0].id,
+      now,
+      deviceValidation.clientDeviceId,
+    );
     if (stickyBinding.status === "blocked") return sessionBlocked();
     stickyPinnedId = stickyBinding.accountId;
     ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
+  }
+
+  if (stickyBinding && deviceValidation.clientDeviceId) {
+    stickyBinding = bindStickyClientDeviceId(stickyKey, deviceValidation.clientDeviceId) ?? stickyBinding;
+    if (stickyBinding.status === "blocked") return sessionBlocked();
+    if (stickyBinding.clientDeviceId !== deviceValidation.clientDeviceId) return deviceIdentityMismatch();
+  }
+
+  // A concurrent claim may have supplied a different original device. Check
+  // the winning durable value before any account credential or upstream work.
+  if (stickyBinding?.clientDeviceId) {
+    const winningValidation = validateClientDeviceIdentity(
+      req.headers,
+      parsedBody,
+      bodyText,
+      bodyIsJson,
+      bodySignals,
+      stickyBinding,
+    );
+    if (winningValidation.response) return winningValidation.response;
+  }
+
+  if (stickyBinding?.status === "pending" && isSubstantiveMessageRequest(req, url, parsedBody, bodyIsJson)) {
+    stickyBinding = promotePendingSticky(stickyKey, now) ?? stickyBinding;
+    if (stickyBinding.status === "blocked") return sessionBlocked();
+  }
+
+  // One last fail-closed read narrows the race with operator blocking/account
+  // deletion and confirms that no concurrent request changed the winning
+  // device identity before account credentials are touched.
+  if (stickyPinnedId) {
+    const finalBinding = getStickyIdentity(stickyKey);
+    if (!finalBinding || finalBinding.status === "blocked" || finalBinding.accountId !== stickyPinnedId) {
+      return sessionBlocked();
+    }
+    const finalDeviceValidation = validateClientDeviceIdentity(
+      req.headers,
+      parsedBody,
+      bodyText,
+      bodyIsJson,
+      bodySignals,
+      finalBinding,
+    );
+    if (finalDeviceValidation.response) return finalDeviceValidation.response;
   }
 
   const exhaustedAccounts = stickyPinnedId
@@ -116,6 +215,11 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
     if (tried.has(account.id)) continue;
     tried.add(account.id);
 
+    const accountUuid = accountRealUuid(account.id);
+    if (!accountUuid) return accountIdentityMissing(account);
+    const deviceId = accountDeviceId(account.id) ?? (account.device_id_override?.trim() || null);
+    if (hasDeviceIdSignal && !deviceId) return accountDeviceIdentityMissing(account);
+
     const res = await attempt(account, req, url, bodyBuf, settings, {
       method: req.method,
       path: `${url.pathname}${url.search}`,
@@ -124,6 +228,9 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       failoverAttempt,
       parsedBody,
       bodySignals,
+      accountUuid,
+      deviceId,
+      sessionId,
       wantsStream: isRecord(parsedBody) && parsedBody.stream === true,
       rawRequest,
     });
@@ -179,17 +286,13 @@ async function attempt(
   }
 
   const target = `${API_BASE}${url.pathname}${url.search}`;
-  // Prefer the account's own Claude device id (machineID from its config dir) so
-  // upstream sees a device fingerprint consistent with that account; fall back to
-  // a manually configured override.
-  const deviceIdOverride = accountDeviceId(account.id) ?? account.device_id_override;
   const headers = prepareRequestHeaders(
     req.headers,
     accessToken,
-    deviceIdOverride,
+    context.deviceId,
     settings.stripForwardedHeaders,
   );
-  const outboundBody = buildAttemptBody(bodyBuf, account, context, deviceIdOverride);
+  const outboundBody = buildAttemptBody(bodyBuf, context);
   const rawUpstreamRequest = context.rawRequest
     ? upstreamRequestSnapshot(req.method, target, headers, outboundBody)
     : null;
@@ -468,6 +571,9 @@ interface AttemptContext {
   failoverAttempt: number;
   parsedBody: unknown;
   bodySignals: BodyIdentitySignals;
+  accountUuid: string;
+  deviceId: string | null;
+  sessionId: string;
   wantsStream: boolean;
   rawRequest: RawRequestSnapshot | null;
 }
@@ -485,152 +591,387 @@ interface RawResponseSnapshot {
 interface BodyIdentitySignals {
   hasDeviceId: boolean;
   hasAccountUuid: boolean;
+  hasSessionId: boolean;
+  deviceId: string | null;
+  userIdText: string | null;
+  userIdEnvelope: Record<string, unknown> | null;
 }
-
-// Conversation-content subtrees are never scanned or patched: identity slots
-// don't live there, but the same key names can appear in replayed tool_use
-// payloads, and rewriting those would corrupt history the model already emitted.
-const IDENTITY_SKIP_KEYS = new Set(["messages", "system", "tools"]);
 
 function scanBodyIdentity(value: unknown): BodyIdentitySignals {
-  const signals: BodyIdentitySignals = { hasDeviceId: false, hasAccountUuid: false };
-  scanIdentity(value, signals);
-  return signals;
+  const empty: BodyIdentitySignals = {
+    hasDeviceId: false,
+    hasAccountUuid: false,
+    hasSessionId: false,
+    deviceId: null,
+    userIdText: null,
+    userIdEnvelope: null,
+  };
+  if (!isRecord(value) || !isRecord(value.metadata) || typeof value.metadata.user_id !== "string") return empty;
+  const userIdText = value.metadata.user_id;
+  const userIdEnvelope = parseUserIdJson(userIdText);
+  if (!userIdEnvelope) return { ...empty, userIdText };
+  const hasDeviceId = Object.hasOwn(userIdEnvelope, "device_id");
+  return {
+    hasDeviceId,
+    hasAccountUuid: Object.hasOwn(userIdEnvelope, "account_uuid"),
+    hasSessionId: Object.hasOwn(userIdEnvelope, "session_id"),
+    deviceId: hasDeviceId ? identityPrimitive(userIdEnvelope.device_id) : null,
+    userIdText,
+    userIdEnvelope,
+  };
 }
 
-function scanIdentity(value: unknown, signals: BodyIdentitySignals): void {
-  if (Array.isArray(value)) {
-    for (const item of value) scanIdentity(item, signals);
-    return;
-  }
-  if (!isRecord(value)) return;
-  for (const [key, nested] of Object.entries(value)) {
-    if (IDENTITY_SKIP_KEYS.has(key)) continue;
-    if (isDeviceIdEntry(key, nested)) {
-      signals.hasDeviceId = true;
-    } else if (isAccountUuidEntry(key, nested)) {
-      signals.hasAccountUuid = true;
-    } else {
-      scanIdentity(parseUserIdJson(key, nested) ?? nested, signals);
-    }
-  }
-}
-
-/** A device-id signal is a deviceid-ish key holding a non-empty primitive; object values are descended into instead. */
-function isDeviceIdEntry(key: string, value: unknown): boolean {
-  if (normalizeIdentityKey(key) !== "deviceid") return false;
-  if (typeof value === "string") return value.trim().length > 0;
-  return typeof value === "number" || typeof value === "boolean";
-}
-
-/** An account-uuid slot is any accountuuid-ish key; the current value can be empty or the wrong type. */
-function isAccountUuidEntry(key: string, _value: unknown): boolean {
-  return normalizeIdentityKey(key) === "accountuuid";
+function identityPrimitive(value: unknown): string | null {
+  if (typeof value === "string") return value.trim() || null;
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeIdentityKey(key: string): string {
-  return key.replaceAll(/[-_]/g, "").toLowerCase();
+function hasAssistantMessage(value: unknown): boolean {
+  if (!isRecord(value) || !Array.isArray(value.messages)) return false;
+  return value.messages.some((message) => isRecord(message) && message.role === "assistant");
+}
+
+function isSubstantiveMessageRequest(
+  req: Request,
+  url: URL,
+  value: unknown,
+  bodyIsJson: boolean,
+): boolean {
+  return (
+    req.method === "POST" &&
+    url.pathname === "/v1/messages" &&
+    bodyIsJson &&
+    isRecord(value) &&
+    Array.isArray(value.messages) &&
+    !isQuotaProbe(value)
+  );
+}
+
+function isQuotaProbe(value: Record<string, unknown>): boolean {
+  if (value.max_tokens !== 1 || !Array.isArray(value.messages) || value.messages.length !== 1) return false;
+  const message = value.messages[0];
+  return isRecord(message) && message.role === "user" && message.content === "quota";
 }
 
 /**
  * Claude Code packs identity into `metadata.user_id` as a JSON envelope
- * ({"device_id":…,"account_uuid":…,"session_id":…}). Parse it so identity
- * scanning/patching reaches inside; returns null when the value isn't that shape.
+ * ({"device_id":…,"account_uuid":…,"session_id":…). Only this exact path
+ * is an expected body identity location in the direct captures.
  */
-function parseUserIdJson(key: string, value: unknown): Record<string, unknown> | unknown[] | null {
-  if (normalizeIdentityKey(key) !== "userid" || typeof value !== "string") return null;
+function parseUserIdJson(value: string): Record<string, unknown> | null {
   const trimmed = value.trim();
-  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+  if (!trimmed.startsWith("{")) return null;
   try {
     const parsed: unknown = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) return parsed;
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-interface IdentityPatch {
-  deviceId: string | null;
-  accountUuid: string | null;
+interface DeviceValidation {
+  clientDeviceId: string | null;
+  response: Response | null;
+}
+
+function validateClientDeviceIdentity(
+  headers: Headers,
+  body: unknown,
+  bodyText: string | null,
+  bodyIsJson: boolean,
+  signals: BodyIdentitySignals,
+  binding: StickyIdentityBinding | null,
+): DeviceValidation {
+  if (containsOffPathDeviceField(body, bodyText, signals)) {
+    return { clientDeviceId: null, response: unexpectedDeviceIdentity() };
+  }
+
+  const rawHeaderDeviceId = headers.get(DEVICE_ID_HEADER);
+  const headerDeviceId = rawHeaderDeviceId?.trim() || null;
+  if (headers.has(DEVICE_ID_HEADER) && (!headerDeviceId || headerDeviceId.includes(","))) {
+    return { clientDeviceId: null, response: invalidDeviceIdentity() };
+  }
+  if (signals.hasDeviceId && !signals.deviceId) {
+    return { clientDeviceId: null, response: invalidDeviceIdentity() };
+  }
+  if (headerDeviceId && signals.deviceId && headerDeviceId !== signals.deviceId) {
+    return { clientDeviceId: null, response: deviceIdentityMismatch() };
+  }
+
+  const requestDeviceId = headerDeviceId ?? signals.deviceId;
+  if (binding?.clientDeviceId && requestDeviceId && binding.clientDeviceId !== requestDeviceId) {
+    return { clientDeviceId: requestDeviceId, response: deviceIdentityMismatch() };
+  }
+  const originalDeviceId = binding?.clientDeviceId ?? requestDeviceId;
+  if (
+    originalDeviceId &&
+    hasUnexpectedDeviceIdentity(headers, body, bodyText, bodyIsJson, signals, originalDeviceId)
+  ) {
+    return { clientDeviceId: requestDeviceId, response: unexpectedDeviceIdentity() };
+  }
+  return { clientDeviceId: requestDeviceId, response: null };
+}
+
+function hasUnexpectedDeviceIdentity(
+  headers: Headers,
+  body: unknown,
+  bodyText: string | null,
+  bodyIsJson: boolean,
+  signals: BodyIdentitySignals,
+  deviceId: string,
+): boolean {
+  for (const [name, value] of headers) {
+    if (name.toLowerCase() === DEVICE_ID_HEADER) continue;
+    if (name.includes(deviceId) || value.includes(deviceId)) return true;
+  }
+
+  // Direct message envelopes contain the original device literal exactly once;
+  // count-token bodies contain it zero times. Raw counting catches values hidden
+  // by duplicate JSON keys before JSON.parse discarded them.
+  const expectedRawOccurrences = signals.deviceId === deviceId ? 1 : 0;
+  if (bodyText && countOccurrences(bodyText, deviceId) !== expectedRawOccurrences) return true;
+  if (!bodyIsJson) return bodyText?.includes(deviceId) ?? false;
+  return bodyContainsUnexpectedDeviceId(body, deviceId, signals, []);
+}
+
+function bodyContainsUnexpectedDeviceId(
+  value: unknown,
+  deviceId: string,
+  signals: BodyIdentitySignals,
+  path: string[],
+): boolean {
+  if (
+    path.length === 2 &&
+    path[0] === "metadata" &&
+    path[1] === "user_id" &&
+    value === signals.userIdText &&
+    signals.userIdEnvelope
+  ) {
+    return envelopeContainsUnexpectedDeviceId(signals.userIdEnvelope, deviceId);
+  }
+  if (typeof value === "string") return value.includes(deviceId);
+  if (typeof value === "number" || typeof value === "boolean") return String(value).includes(deviceId);
+  if (Array.isArray(value)) {
+    return value.some((item, index) => bodyContainsUnexpectedDeviceId(item, deviceId, signals, [...path, String(index)]));
+  }
+  if (!isRecord(value)) return false;
+
+  for (const [key, nested] of Object.entries(value)) {
+    if (key.includes(deviceId)) return true;
+    if (bodyContainsUnexpectedDeviceId(nested, deviceId, signals, [...path, key])) return true;
+  }
+  return false;
+}
+
+function envelopeContainsUnexpectedDeviceId(envelope: Record<string, unknown>, deviceId: string): boolean {
+  for (const [key, value] of Object.entries(envelope)) {
+    if (key.includes(deviceId)) return true;
+    if (key === "device_id" && identityPrimitive(value) === deviceId) continue;
+    if (unknownValueContains(value, deviceId)) return true;
+  }
+  return false;
+}
+
+function unknownValueContains(value: unknown, needle: string): boolean {
+  if (typeof value === "string") return value.includes(needle);
+  if (typeof value === "number" || typeof value === "boolean") return String(value).includes(needle);
+  if (Array.isArray(value)) return value.some((item) => unknownValueContains(item, needle));
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, nested]) => key.includes(needle) || unknownValueContains(nested, needle));
+}
+
+function containsOffPathDeviceField(body: unknown, bodyText: string | null, signals: BodyIdentitySignals): boolean {
+  // An unescaped device-id property in the outer body is never an expected
+  // Claude Code identity field. This also catches duplicate keys JSON.parse hid.
+  if (bodyText && /(?:^|[,{]\s*)"device(?:_|-)?id"\s*:/i.test(bodyText)) return true;
+  if (containsDeviceKey(body)) return true;
+  if (!signals.userIdEnvelope || !signals.userIdText) return false;
+
+  const expectedExactKeys = signals.hasDeviceId ? 1 : 0;
+  if (countJsonDeviceKeys(signals.userIdText) !== expectedExactKeys) return true;
+  return Object.entries(signals.userIdEnvelope).some(([key, value]) => {
+    if (key === "device_id") return false;
+    return normalizeIdentityKey(key) === "deviceid" || containsDeviceKey(value);
+  });
+}
+
+function containsDeviceKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsDeviceKey);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(
+    ([key, nested]) => normalizeIdentityKey(key) === "deviceid" || containsDeviceKey(nested),
+  );
+}
+
+function countJsonDeviceKeys(value: string): number {
+  return Array.from(value.matchAll(/(?:^|[,{]\s*)"device_id"\s*:/g)).length;
+}
+
+function normalizeIdentityKey(key: string): string {
+  return key.replaceAll(/[-_]/g, "").toLowerCase();
+}
+
+function countOccurrences(value: string, needle: string): number {
+  let count = 0;
+  let offset = 0;
+  while (offset <= value.length - needle.length) {
+    const found = value.indexOf(needle, offset);
+    if (found < 0) break;
+    count += 1;
+    offset = found + needle.length;
+  }
+  return count;
 }
 
 /**
- * Per-attempt outbound body: patch device-id slots to the account's override and
- * account-uuid slots to the routed account's id — each only where the client
- * already sent that slot (including inside the metadata.user_id JSON envelope).
+ * JSON.parse keeps only one value for duplicate object keys. Walk the original
+ * JSON grammar as well so an overwritten `messages`, `role`, or identity value
+ * cannot evade admission or device-location checks.
+ */
+function hasDuplicateJsonKeys(value: string): boolean {
+  let offset = 0;
+  let duplicate = false;
+
+  function skipWhitespace(): void {
+    while (/\s/.test(value[offset] ?? "")) offset += 1;
+  }
+
+  function readString(): string {
+    const start = offset;
+    offset += 1;
+    while (offset < value.length) {
+      const char = value[offset];
+      if (char === "\\") {
+        offset += 2;
+        continue;
+      }
+      offset += 1;
+      if (char === '"') {
+        const parsed: unknown = JSON.parse(value.slice(start, offset));
+        if (typeof parsed !== "string") throw new Error("invalid JSON string");
+        return parsed;
+      }
+    }
+    throw new Error("unterminated JSON string");
+  }
+
+  function readValue(): void {
+    skipWhitespace();
+    const char = value[offset];
+    if (char === "{") {
+      readObject();
+      return;
+    }
+    if (char === "[") {
+      readArray();
+      return;
+    }
+    if (char === '"') {
+      readString();
+      return;
+    }
+    while (offset < value.length && !/[\s,\]}]/.test(value[offset] ?? "")) offset += 1;
+  }
+
+  function readObject(): void {
+    offset += 1;
+    skipWhitespace();
+    const keys = new Set<string>();
+    if (value[offset] === "}") {
+      offset += 1;
+      return;
+    }
+    while (offset < value.length) {
+      skipWhitespace();
+      const key = readString();
+      if (keys.has(key)) duplicate = true;
+      keys.add(key);
+      skipWhitespace();
+      if (value[offset] !== ":") throw new Error("invalid JSON object");
+      offset += 1;
+      readValue();
+      skipWhitespace();
+      if (value[offset] === "}") {
+        offset += 1;
+        return;
+      }
+      if (value[offset] !== ",") throw new Error("invalid JSON object");
+      offset += 1;
+    }
+    throw new Error("unterminated JSON object");
+  }
+
+  function readArray(): void {
+    offset += 1;
+    skipWhitespace();
+    if (value[offset] === "]") {
+      offset += 1;
+      return;
+    }
+    while (offset < value.length) {
+      readValue();
+      skipWhitespace();
+      if (value[offset] === "]") {
+        offset += 1;
+        return;
+      }
+      if (value[offset] !== ",") throw new Error("invalid JSON array");
+      offset += 1;
+    }
+    throw new Error("unterminated JSON array");
+  }
+
+  try {
+    readValue();
+    skipWhitespace();
+    return duplicate || offset !== value.length;
+  } catch {
+    // Callers only use this after JSON.parse succeeded. Any disagreement is
+    // treated as ambiguous and therefore fails closed.
+    return true;
+  }
+}
+
+/**
+ * Per-attempt outbound body: synchronize device/account/session identity slots
+ * to the pinned account and validated session header. Each slot is rewritten
+ * only where direct Claude Code sent it, including metadata.user_id envelopes.
  * The shared bodyBuf stays pristine so account-specific rewriting never
  * mutates the original request.
  */
 function buildAttemptBody(
   bodyBuf: ArrayBuffer | null,
-  account: Account,
   context: AttemptContext,
-  deviceIdOverride: string | null,
 ): ArrayBuffer | null {
-  const patch: IdentityPatch = {
-    deviceId: deviceIdOverride && context.bodySignals.hasDeviceId ? deviceIdOverride : null,
-    // Prefer the account's real Anthropic accountUuid (from its Claude folder) so
-    // the body matches a native Claude Code call; fall back to our internal id.
-    accountUuid: context.bodySignals.hasAccountUuid ? (accountRealUuid(account.id) ?? account.id) : null,
-  };
-  if (!bodyBuf || (patch.deviceId === null && patch.accountUuid === null)) return bodyBuf;
+  const signals = context.bodySignals;
+  if (!bodyBuf || !signals.userIdEnvelope || !isRecord(context.parsedBody)) return bodyBuf;
+  const envelope = structuredClone(signals.userIdEnvelope);
+  let changed = false;
+  if (signals.hasDeviceId && context.deviceId && envelope.device_id !== context.deviceId) {
+    envelope.device_id = context.deviceId;
+    changed = true;
+  }
+  if (signals.hasAccountUuid && envelope.account_uuid !== context.accountUuid) {
+    envelope.account_uuid = context.accountUuid;
+    changed = true;
+  }
+  if (signals.hasSessionId && envelope.session_id !== context.sessionId) {
+    envelope.session_id = context.sessionId;
+    changed = true;
+  }
+  if (!changed) return bodyBuf;
+
   const patched = structuredClone(context.parsedBody);
-  patchIdentityInPlace(patched, patch);
-  const rewritten = JSON.stringify(patched);
-  // Identity already matches the routed account: forward the client's exact bytes.
-  // Re-serializing would silently change whitespace and number formatting.
-  if (rewritten === JSON.stringify(context.parsedBody)) return bodyBuf;
-  const bytes = new TextEncoder().encode(rewritten);
+  if (!isRecord(patched.metadata)) return bodyBuf;
+  patched.metadata.user_id = JSON.stringify(envelope);
+  const bytes = new TextEncoder().encode(JSON.stringify(patched));
   const out = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(out).set(bytes);
   return out;
-}
-
-/**
- * Returns true when anything was rewritten, so user_id envelopes are only
- * re-serialized on change. Slots whose value already equals the patch are left
- * untouched, keeping the client's original serialization intact.
- */
-function patchIdentityInPlace(value: unknown, patch: IdentityPatch): boolean {
-  if (Array.isArray(value)) {
-    let mutated = false;
-    for (const item of value) mutated = patchIdentityInPlace(item, patch) || mutated;
-    return mutated;
-  }
-  if (!isRecord(value)) return false;
-  let mutated = false;
-  for (const [key, nested] of Object.entries(value)) {
-    if (IDENTITY_SKIP_KEYS.has(key)) continue;
-    if (patch.deviceId !== null && isDeviceIdEntry(key, nested)) {
-      if (nested !== patch.deviceId) {
-        value[key] = patch.deviceId;
-        mutated = true;
-      }
-      continue;
-    }
-    if (patch.accountUuid !== null && isAccountUuidEntry(key, nested)) {
-      if (nested !== patch.accountUuid) {
-        value[key] = patch.accountUuid;
-        mutated = true;
-      }
-      continue;
-    }
-    const embedded = parseUserIdJson(key, nested);
-    if (embedded !== null) {
-      if (patchIdentityInPlace(embedded, patch)) {
-        value[key] = JSON.stringify(embedded);
-        mutated = true;
-      }
-      continue;
-    }
-    mutated = patchIdentityInPlace(nested, patch) || mutated;
-  }
-  return mutated;
 }
 
 interface ProxyAuthResult {
@@ -954,6 +1295,88 @@ function sessionBlocked(): Response {
       message: "This Claude Code session was blocked by an operator.",
     },
     { status: 403 },
+  );
+}
+
+function unknownSessionHistory(): Response {
+  return Response.json(
+    {
+      error: "unknown_session_history",
+      message: "An unknown Claude Code session cannot start with assistant history.",
+    },
+    { status: 403 },
+  );
+}
+
+function invalidClaudeRequestBody(): Response {
+  return Response.json(
+    {
+      error: "invalid_claude_request_body",
+      message: "Claude Code requests require valid, inspectable JSON; message requests also require a messages array.",
+    },
+    { status: 400 },
+  );
+}
+
+function ambiguousClaudeRequestBody(): Response {
+  return Response.json(
+    {
+      error: "ambiguous_claude_request_body",
+      message: "Claude Code request JSON must not contain duplicate or malformed identity keys.",
+    },
+    { status: 400 },
+  );
+}
+
+function invalidDeviceIdentity(): Response {
+  return Response.json(
+    {
+      error: "invalid_device_identity",
+      message: "Claude Code device identity must be one non-empty value.",
+    },
+    { status: 403 },
+  );
+}
+
+function deviceIdentityMismatch(): Response {
+  return Response.json(
+    {
+      error: "device_identity_mismatch",
+      message: "This Claude Code session is already bound to a different client device identity.",
+    },
+    { status: 403 },
+  );
+}
+
+function unexpectedDeviceIdentity(): Response {
+  return Response.json(
+    {
+      error: "unexpected_device_identity",
+      message: "The client device ID appeared outside a recognized Claude Code identity field.",
+    },
+    { status: 403 },
+  );
+}
+
+function accountIdentityMissing(account: Account): Response {
+  return Response.json(
+    {
+      error: "account_identity_missing",
+      message: `Account ${account.name} is missing accountUuid in its .claude.json file.`,
+      account: { id: account.id, name: account.name },
+    },
+    { status: 503 },
+  );
+}
+
+function accountDeviceIdentityMissing(account: Account): Response {
+  return Response.json(
+    {
+      error: "account_device_identity_missing",
+      message: `Account ${account.name} is missing machineID in its .claude.json file and has no device ID override.`,
+      account: { id: account.id, name: account.name },
+    },
+    { status: 503 },
   );
 }
 

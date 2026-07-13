@@ -128,6 +128,34 @@ describe("accountDeviceId / accountRealUuid", () => {
     expect(accountRealUuid("h")).toBeNull();
   });
 
+  test("treats empty and whitespace-only identity values as missing", () => {
+    writeClaudeJson("blank", { machineID: "   ", accountUuid: " \t " });
+    expect(accountDeviceId("blank")).toBeNull();
+    expect(accountRealUuid("blank")).toBeNull();
+    writeClaudeJson("empty", { machineID: "", accountUuid: "" });
+    expect(accountDeviceId("empty")).toBeNull();
+    expect(accountRealUuid("empty")).toBeNull();
+  });
+
+  test("invalidates cached identity when .claude.json changes or disappears", () => {
+    const id = "changing";
+    const path = join(accountConfigDir(id), ".claude.json");
+    writeClaudeJson(id, { machineID: "machine-old", accountUuid: "uuid-old" });
+    expect(accountDeviceId(id)).toBe("machine-old");
+    expect(accountRealUuid(id)).toBe("uuid-old");
+
+    writeClaudeJson(id, { userID: "identity-removed" });
+    expect(accountDeviceId(id)).toBeNull();
+    expect(accountRealUuid(id)).toBeNull();
+
+    writeClaudeJson(id, { machineID: "machine-new", accountUuid: "uuid-new" });
+    expect(accountDeviceId(id)).toBe("machine-new");
+    expect(accountRealUuid(id)).toBe("uuid-new");
+    rmSync(path, { force: true });
+    expect(accountDeviceId(id)).toBeNull();
+    expect(accountRealUuid(id)).toBeNull();
+  });
+
   test("caches are cleared when the dir is deleted", () => {
     writeClaudeJson("i", { machineID: "machine-i", accountUuid: "uuid-i" });
     expect(accountDeviceId("i")).toBe("machine-i");

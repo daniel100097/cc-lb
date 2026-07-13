@@ -152,7 +152,7 @@ type ApiKeyUsage7d = {
 
 type StickySessionEntry = {
   key: string;
-  status: "active" | "blocked";
+  status: "pending" | "active" | "blocked";
   displayName?: string;
   accountId?: string | null;
   accountName?: string | null;
@@ -166,6 +166,7 @@ type StickySessionsResponse = {
   entries?: StickySessionEntry[];
   total?: number;
   activeCount?: number;
+  pendingCount?: number;
   hasMore?: boolean;
 };
 
@@ -247,7 +248,7 @@ function AppHeader() {
               key={item.href}
               to={item.href}
               end={item.href === "/"}
-              className={({ isActive }) =>
+              className={({ isActive }: { isActive: boolean }) =>
                 cn(
                   "rounded-full px-4 py-1.5 text-sm transition-colors",
                   isActive ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
@@ -279,7 +280,7 @@ function AppHeader() {
             key={item.href}
             to={item.href}
             end={item.href === "/"}
-            className={({ isActive }) =>
+            className={({ isActive }: { isActive: boolean }) =>
               cn(
                 "rounded-full px-3 py-1.5 text-sm",
                 isActive ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
@@ -689,6 +690,7 @@ function StickySessionsPage() {
     [blockableEntries, selectedIds],
   );
   const selectedCount = selectedTargets.length;
+  const blockableCount = sessions.activeCount + sessions.pendingCount;
   const allVisibleSelected = blockableEntries.length > 0 && selectedCount === blockableEntries.length;
   const someVisibleSelected = selectedCount > 0 && !allVisibleSelected;
   const hasFilters = accountQuery.trim().length > 0 || keyQuery.trim().length > 0;
@@ -736,7 +738,10 @@ function StickySessionsPage() {
 
   return (
     <div className="animate-fade-in-up flex flex-col gap-6">
-      <PageHeading title="Sticky" description="Every Claude Code chat stays on its first account; operator-blocked session IDs remain permanently rejected." />
+      <PageHeading
+        title="Sticky"
+        description="Chats stay on their first account. Preflights remain pending until a history-free first substantive message; operator-blocked IDs remain permanently rejected."
+      />
       <AlertMessage message={sessionsQuery.error && !sessionsQuery.data ? "Sticky session procedures are unavailable or still loading." : null} />
       <section className="space-y-4 rounded-xl border bg-card p-4">
         <div className="grid gap-3 lg:grid-cols-2">
@@ -761,18 +766,19 @@ function StickySessionsPage() {
                 setKeyQuery(event.target.value);
                 setOffset(0);
               }}
-              placeholder="Session, thread, or cache key"
+              placeholder="Session ID (sid:…)"
             />
           </div>
         </div>
         <div className="flex flex-col gap-3 rounded-lg border px-3 py-2 lg:flex-row lg:items-center lg:justify-between">
-          <div className="grid gap-2 text-sm sm:grid-cols-3">
+          <div className="grid gap-2 text-sm sm:grid-cols-4">
             <CountPill label="Active" value={sessions.activeCount} />
-            <CountPill label="Blocked" value={Math.max(0, sessions.total - sessions.activeCount)} />
+            <CountPill label="Pending" value={sessions.pendingCount} />
+            <CountPill label="Blocked" value={Math.max(0, sessions.total - blockableCount)} />
             <CountPill label="Selected" value={selectedCount} />
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Button type="button" variant="outline" size="sm" disabled={busy || !hasFilters || sessions.activeCount === 0} onClick={() => setBlockFilteredOpen(true)}>
+            <Button type="button" variant="outline" size="sm" disabled={busy || !hasFilters || blockableCount === 0} onClick={() => setBlockFilteredOpen(true)}>
               <Ban className="size-4" />
               Block Filtered
             </Button>
@@ -818,6 +824,7 @@ function StickySessionsPage() {
                 {sessions.entries.map((entry) => {
                   const selected = selectedIds.includes(stickySessionRowId(entry));
                   const blocked = entry.status === "blocked";
+                  const pending = entry.status === "pending";
                   return (
                     <TableRow key={stickySessionRowId(entry)} data-state={selected ? "selected" : undefined}>
                       <TableCell className="pl-4">
@@ -830,7 +837,11 @@ function StickySessionsPage() {
                       </TableCell>
                       <TableCell className="truncate font-mono text-xs" title={entry.key}>{entry.key}</TableCell>
                       <TableCell className="truncate text-xs">{entry.displayName}</TableCell>
-                      <TableCell><Badge variant={blocked ? "destructive" : "outline"}>{blocked ? "Blocked" : "Active"}</Badge></TableCell>
+                      <TableCell>
+                        <Badge variant={blocked ? "destructive" : pending ? "secondary" : "outline"}>
+                          {blocked ? "Blocked" : pending ? "Pending" : "Active"}
+                        </Badge>
+                      </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{formatDateish(entry.updatedAt)}</TableCell>
                       <TableCell className="pr-4 text-right">
                         <Button type="button" variant="ghost" size="sm" disabled={busy || blocked} onClick={() => setBlockTarget(stickySessionTarget(entry))}>
@@ -867,7 +878,7 @@ function StickySessionsPage() {
       <ConfirmDialog
         open={blockSelectedOpen}
         title="Block selected chat sessions"
-        description={`Permanently block ${compactNumber(selectedCount)} selected chat sessions?`}
+        description={`Permanently block ${compactNumber(selectedCount)} selected chat sessions? This cannot be undone; these IDs will always be rejected.`}
         confirmLabel="Block Selected"
         confirmDisabled={selectedCount === 0 || busy}
         onOpenChange={setBlockSelectedOpen}
@@ -876,9 +887,9 @@ function StickySessionsPage() {
       <ConfirmDialog
         open={blockFilteredOpen}
         title="Block filtered chat sessions"
-        description={`Permanently block ${compactNumber(sessions.activeCount)} active chat sessions matching the current filters?`}
+        description={`Permanently block ${compactNumber(blockableCount)} active or pending chat sessions matching the current filters? This cannot be undone; these IDs will always be rejected.`}
         confirmLabel="Block Filtered"
-        confirmDisabled={!hasFilters || sessions.activeCount === 0 || busy}
+        confirmDisabled={!hasFilters || blockableCount === 0 || busy}
         onOpenChange={setBlockFilteredOpen}
         onConfirm={() => blockFiltered.mutate({ accountQuery, search: keyQuery })}
       />
@@ -1793,10 +1804,23 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     onError: (error) => toast.error(error.message || "Failed to reset rate limit"),
   });
   const deleteAccount = trpc.accounts.delete.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       await utils.accounts.list.invalidate();
       await utils.stats.invalidate();
-      toast.success("Account deleted");
+      await utils.stickySessions.list.invalidate();
+      if (!result.configRemoved) {
+        toast.warning(
+          result.blockedSessions > 0
+            ? `Account deleted and ${compactNumber(result.blockedSessions)} linked chat sessions permanently blocked, but its local config directory could not be deleted`
+            : "Account deleted, but its local config directory could not be deleted",
+        );
+        return;
+      }
+      toast.success(
+        result.blockedSessions > 0
+          ? `Account deleted; ${compactNumber(result.blockedSessions)} linked chat sessions permanently blocked`
+          : "Account deleted",
+      );
     },
   });
   const blurNames = usePrivacyStore((state) => state.blurNames);
@@ -1833,7 +1857,7 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
   }
 
   async function remove() {
-    if (!window.confirm(`Delete ${account.name}?`)) return;
+    if (!window.confirm(`Delete ${account.name}? Every chat linked to this account will be permanently blocked and can never be reassigned.`)) return;
     await deleteAccount.mutateAsync({ id: account.id });
   }
 
@@ -2031,7 +2055,7 @@ function AddAccountDialog() {
             id="account-device-id"
             value={deviceIdOverride}
             onChange={(event) => setDeviceIdOverride(event.target.value)}
-            placeholder="Optional x-device-id"
+            placeholder="Optional device identity override"
           />
         </div>
         <form className="grid gap-4" onSubmit={submitClaudeCodeLogin}>
@@ -2197,10 +2221,10 @@ function SettingsForm({
         helper={durationMs(form.rateLimitBackoffMaxMs)}
       />
       <SettingNumber
-        label="Session duration"
+        label="Balancer usage-session duration"
         value={form.sessionDurationMs}
         onChange={(value) => updateNumber("sessionDurationMs", value)}
-        helper={durationMs(form.sessionDurationMs)}
+        helper={`${durationMs(form.sessionDurationMs)} · Balancer accounting only; chat bindings never expire or move.`}
       />
       <SettingNumber label="Overload retries" value={form.overloadRetryMax} onChange={(value) => updateNumber("overloadRetryMax", value)} helper="Attempts" />
       <SettingNumber
@@ -2491,6 +2515,7 @@ function normalizeStickySessions(data: RouterOutput["stickySessions"]["list"] | 
     entries,
     total: data?.total ?? 0,
     activeCount: data?.activeCount ?? 0,
+    pendingCount: data?.pendingCount ?? 0,
     hasMore: data?.hasMore ?? false,
   };
 }

@@ -40,8 +40,9 @@ export function prepareRequestHeaders(
   }
 
   h.set("authorization", `Bearer ${accessToken}`);
-  if (deviceIdOverride && incoming.has(DEVICE_ID_HEADER)) {
-    h.set(DEVICE_ID_HEADER, deviceIdOverride);
+  if (incoming.has(DEVICE_ID_HEADER)) {
+    if (deviceIdOverride) h.set(DEVICE_ID_HEADER, deviceIdOverride);
+    else h.delete(DEVICE_ID_HEADER);
   }
   // Ensure the OAuth beta flag is present.
   const beta = h.get("anthropic-beta");

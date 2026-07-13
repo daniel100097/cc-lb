@@ -136,16 +136,51 @@ local Claude telemetry routes remain exempt. These checks are compatibility
 gates, not authentication; enable proxy API-key enforcement when access control
 is required.
 
-The proxy also preserves Claude Code identity signals per account where the
-client already sent them, including `x-device-id`, `device_id`, and
-`account_uuid` fields.
+The proxy synchronizes every identity slot observed in direct Claude Code
+message traffic. The outbound OAuth token and `account_uuid` come from the
+pinned account, `device_id`/`x-device-id` come from that account's `machineID`
+or configured device override, and embedded `session_id` fields are rewritten
+to the validated session header. Identity fields are rewritten only where the
+client sent them, so count-token requests that omit body identity remain the
+same shape as direct traffic. The validated User-Agent is forwarded unchanged.
+Body rewrites are limited to the exact `device_id`, `account_uuid`, and
+`session_id` members of the `metadata.user_id` JSON envelope; arbitrary
+lookalike fields are never treated as identity slots.
+
+The pinned account must have a real `accountUuid` in `.claude.json`; if it is
+missing, cc-lb returns `503 account_identity_missing`. A request carrying a
+device ID also requires an account-specific `machineID` or configured device
+override, otherwise it returns `503 account_device_identity_missing`. Both
+checks happen before token or upstream work, and there is no internal-ID or
+client-device fallback.
+
+Client device identity is accepted only in the `x-device-id` header or the
+exact `device_id` member of the JSON envelope in `metadata.user_id`. The first
+client value is persisted with the sticky session. A later conflicting client
+device value fails closed. The original value may not occur in any other header
+or body location—including conversation, system, tool, or duplicate JSON-key
+content—or the request is rejected with `403 unexpected_device_identity`
+instead of allowing an unrewritten device fingerprint to reach Anthropic.
+Malformed JSON and duplicate object keys are also rejected before a session is
+claimed or request traffic is sent upstream.
+
+A previously unseen session is pinned to an account as `pending` when a quota
+or count-token preflight establishes its binding. The first substantive
+`/v1/messages` request must contain no top-level `role: "assistant"` message;
+that request promotes the same permanent binding to `active`. Assistant history
+while the session is unknown or still pending is rejected with
+`403 unknown_session_history` and never reaches Anthropic. Active sessions may
+contain normal assistant history.
 
 The first eligible account selected for a session is claimed before its first
-upstream request and remains that chat's permanent home. cc-lb never moves the
-session to another account after a token error, 401, rate limit, overload, or
-network failure; the request fails while its account is unavailable. An
-operator can permanently block a session from the Sticky dashboard. Blocking
-keeps a tombstone, so that session ID is rejected and can never be reassigned.
+upstream request and remains that chat's permanent home, whether the binding is
+pending or active. cc-lb never moves the session to another account after a
+token error, 401, rate limit, overload, or network failure; the request fails
+while its account is unavailable. An operator can permanently block either a
+pending or active session from the Sticky dashboard. Blocking keeps a
+tombstone, so that session ID is rejected and can never be reassigned. Deleting
+an account atomically turns all of its linked chats into the same permanent
+blocked tombstones.
 
 ## Configuration
 
