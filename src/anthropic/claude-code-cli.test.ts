@@ -42,6 +42,23 @@ describe("Claude Code CLI login parsing", () => {
     expect(command).toContain("printf ready");
     expect(command).toContain("[cc-lb] Claude Code process exited with status");
     expect(command).toContain("sleep 600");
+    expect(command).not.toContain("HTTP_PROXY");
+  });
+
+  test("gives the pane the account's egress proxy env", () => {
+    const direct = buildClaudeCodeLoginEnv({}, "/tmp/claude");
+    expect(direct.HTTP_PROXY).toBeUndefined();
+    expect(direct.HTTPS_PROXY).toBeUndefined();
+
+    const env = buildClaudeCodeLoginEnv({}, "/tmp/claude", "http://user:pass@127.0.0.1:8888/");
+    expect(env.HTTP_PROXY).toBe("http://user:pass@127.0.0.1:8888/");
+    expect(env.HTTPS_PROXY).toBe("http://user:pass@127.0.0.1:8888/");
+    expect(env.https_proxy).toBe("http://user:pass@127.0.0.1:8888/");
+
+    // Explicit exports are the only way per-account env reaches a shared tmux server.
+    const command = buildTmuxLoginCommand({ ...env, CLAUDE_CODE_LOGIN_COMMAND: "printf ready" });
+    expect(command).toContain("export HTTP_PROXY='http://user:pass@127.0.0.1:8888/'");
+    expect(command).toContain("export HTTPS_PROXY='http://user:pass@127.0.0.1:8888/'");
   });
 
   test("extracts the authorize URL from wrapped TUI output", () => {

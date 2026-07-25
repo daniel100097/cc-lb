@@ -1322,6 +1322,179 @@ describe("handleProxy", () => {
     }
   });
 
+  test("sends an account's upstream request through its egress proxy", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const proxied = createAccount({
+      name: "Proxied account",
+      priority: 0,
+      proxy_url: "http://user:hunter2@127.0.0.1:8888/",
+    });
+    seedAccountCredentials(proxied.id, {
+      accessToken: "proxied-access",
+      refreshToken: "proxied-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    patchSettings({ rawHttpLoggingEnabled: true });
+
+    const { inits, restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-egress-proxy", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(inits).toHaveLength(1);
+      expect(inits[0]?.proxy).toBe("http://user:hunter2@127.0.0.1:8888/");
+
+      // The raw log records which egress path was used, with the password masked.
+      const upstreamHead = listRequests({ limit: 10, offset: 0, search: "claude-egress-proxy" }).entries[0]
+        ?.raw_upstream_request_headers ?? "";
+      expect(upstreamHead).toContain("\"proxy\": \"http://user:***@127.0.0.1:8888/\"");
+      expect(upstreamHead).not.toContain("hunter2");
+    } finally {
+      patchSettings({ rawHttpLoggingEnabled: false });
+      restore();
+    }
+  });
+
+  test("leaves an account without a proxy on the direct path", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const direct = createAccount({ name: "Direct account" });
+    seedAccountCredentials(direct.id, {
+      accessToken: "direct-access",
+      refreshToken: "direct-refresh",
+      expiresAt: now + 3_600_000,
+    });
+
+    const { inits, restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-direct-egress", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+
+      expect(inits).toHaveLength(1);
+      expect(Object.hasOwn(inits[0] ?? {}, "proxy")).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  test("reports each account's own egress IP as client-ip", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const proxied = createAccount({
+      name: "Proxied egress IP",
+      priority: 0,
+      proxy_url: "http://127.0.0.1:8888/",
+    });
+    seedAccountCredentials(proxied.id, {
+      accessToken: "proxy-ip-access",
+      refreshToken: "proxy-ip-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    resetServerPublicIpCacheForTests();
+
+    const originalFetch = globalThis.fetch;
+    const outboundHeaders: Headers[] = [];
+    const resolverProxies: BunFetchRequestInit["proxy"][] = [];
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: BunFetchRequestInit) => {
+        const target = input instanceof Request ? input.url : String(input);
+        if (target === "https://one.one.one.one/cdn-cgi/trace") {
+          resolverProxies.push(init?.proxy);
+          return new Response(`ip=${init?.proxy ? "198.51.100.7" : "203.0.113.99"}\n`);
+        }
+        outboundHeaders.push(new Headers(init?.headers));
+        return Response.json({ usage: { input_tokens: 1, output_tokens: 2 } });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [CLIENT_IP_HEADER]: "198.51.100.25",
+            "x-claude-code-session-id": "proxied-client-ip",
+          },
+          body: JSON.stringify({ model: "claude-proxy-client-ip", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+
+      // The lookup goes through the same proxy, so the header matches the socket.
+      expect(resolverProxies).toEqual(["http://127.0.0.1:8888/"]);
+      expect(outboundHeaders[0]?.get(CLIENT_IP_HEADER)).toBe("198.51.100.7");
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetServerPublicIpCacheForTests();
+    }
+  });
+
+  test("never adds client-ip when the incoming request did not send it", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const proxied = createAccount({ name: "No client-ip", proxy_url: "http://127.0.0.1:8888/" });
+    seedAccountCredentials(proxied.id, {
+      accessToken: "no-client-ip-access",
+      refreshToken: "no-client-ip-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    resetServerPublicIpCacheForTests();
+
+    const { headers, restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-no-client-ip", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+
+      // No egress lookup runs, and the header is not invented.
+      expect(headers).toHaveLength(1);
+      expect(headers[0]?.get(CLIENT_IP_HEADER)).toBeNull();
+    } finally {
+      restore();
+      resetServerPublicIpCacheForTests();
+    }
+  });
+
   test("strips forwarded headers from the upstream request when enabled", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {
@@ -2127,10 +2300,11 @@ function sessionUsageWindows(usedPercent: number, resetsAtMs: number | null): st
 function captureFetch(respond: () => Response) {
   const headers: Headers[] = [];
   const bodies: (BodyInit | null | undefined)[] = [];
-  const inits: RequestInit[] = [];
+  // Bun's init type, so per-account egress options like `proxy` stay observable.
+  const inits: BunFetchRequestInit[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = Object.assign(
-    async (_input: RequestInfo | URL, init?: RequestInit) => {
+    async (_input: RequestInfo | URL, init?: BunFetchRequestInit) => {
       inits.push(init ?? {});
       headers.push(new Headers(init?.headers));
       bodies.push(init?.body);

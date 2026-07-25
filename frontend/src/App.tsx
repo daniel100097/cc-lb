@@ -21,6 +21,7 @@ import {
   Loader2,
   Moon,
   MoreHorizontal,
+  Network,
   Pause,
   Pencil,
   Pin,
@@ -1791,6 +1792,7 @@ function DetailItem({ label, value, className }: { label: string; value: string;
 }
 
 function AccountRow({ account, compact }: { account: Account; compact: boolean }) {
+  const [proxyOpen, setProxyOpen] = useState(false);
   const utils = trpc.useUtils();
   const updateAccount = trpc.accounts.update.useMutation({
     onSuccess: async () => {
@@ -1863,7 +1865,14 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
         <div className="flex items-center gap-2">
           <span className={cn("font-medium", blurNames && "privacy-blur")}>{account.name}</span>
         </div>
-        <div className="text-muted-foreground text-xs">{account.id.slice(0, 8)}</div>
+        <div className="text-muted-foreground text-xs">
+          {account.id.slice(0, 8)}
+          {account.proxyUrl ? (
+            <span className={cn("ml-2", blurNames && "privacy-blur")} title={`Egress proxy: ${account.proxyUrl}`}>
+              via {account.proxyUrl}
+            </span>
+          ) : null}
+        </div>
       </td>
       <td className="px-2 py-3">
         <StatusBadge status={account.status} />
@@ -1896,6 +1905,15 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
           <Button type="button" variant="ghost" size="icon" onClick={rename} title="Rename">
             <MoreHorizontal className="size-4" />
           </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => setProxyOpen(true)}
+            title={account.proxyUrl ? `Egress proxy: ${account.proxyUrl}` : "Set egress proxy"}
+          >
+            <Network className={cn("size-4", account.hasProxy && "text-primary")} />
+          </Button>
           {account.status === "rate_limited" ? (
             <Button
               type="button"
@@ -1913,8 +1931,105 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
             <Trash2 className="size-4" />
           </Button>
         </div>
+        <AccountProxyDialog account={account} open={proxyOpen} onOpenChange={setProxyOpen} />
       </td>
     </tr>
+  );
+}
+
+/**
+ * The stored proxy URL is only ever returned masked, so the field starts empty
+ * with the masked value as placeholder: submitting it blank keeps the current
+ * proxy, and "Remove proxy" is the only way to clear it.
+ */
+function AccountProxyDialog({
+  account,
+  open,
+  onOpenChange,
+}: {
+  account: Account;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [proxyUrl, setProxyUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const utils = trpc.useUtils();
+  const updateAccount = trpc.accounts.update.useMutation({
+    onSuccess: async () => {
+      await utils.accounts.list.invalidate();
+      await utils.stats.invalidate();
+    },
+    onError: (mutationError) => setError(mutationError.message),
+  });
+
+  useEffect(() => {
+    if (open) {
+      setProxyUrl("");
+      setError(null);
+    }
+  }, [open]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    if (!proxyUrl.trim()) {
+      onOpenChange(false);
+      return;
+    }
+    await updateAccount.mutateAsync({ id: account.id, proxyUrl });
+    onOpenChange(false);
+    toast.success("Egress proxy saved");
+  }
+
+  async function removeProxy() {
+    setError(null);
+    await updateAccount.mutateAsync({ id: account.id, proxyUrl: null });
+    onOpenChange(false);
+    toast.success("Egress proxy removed");
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Egress proxy</DialogTitle>
+          <DialogDescription>
+            Send all of this account's traffic — proxied requests, token refresh, and usage probes — through an HTTP
+            proxy. Leave unset to connect directly.
+          </DialogDescription>
+        </DialogHeader>
+        <AlertMessage message={error} />
+        <form className="grid gap-4" onSubmit={submit}>
+          <div className="grid gap-2">
+            <Label htmlFor={`account-proxy-${account.id}`}>Proxy URL</Label>
+            <Input
+              id={`account-proxy-${account.id}`}
+              value={proxyUrl}
+              onChange={(event) => setProxyUrl(event.target.value)}
+              placeholder={account.proxyUrl ?? "http://user:pass@127.0.0.1:8888"}
+              autoComplete="off"
+            />
+            <p className="text-muted-foreground text-xs">
+              {account.proxyUrl
+                ? "Leave blank to keep the current proxy. Passwords are never shown."
+                : "http:// or https:// only. SOCKS proxies are not supported."}
+            </p>
+          </div>
+          <DialogFooter>
+            {account.hasProxy ? (
+              <Button type="button" variant="outline" onClick={removeProxy} disabled={updateAccount.isPending}>
+                <Trash2 className="size-4" />
+                Remove proxy
+              </Button>
+            ) : null}
+            <Button type="submit" disabled={updateAccount.isPending}>
+              {updateAccount.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+              Save
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1948,6 +2063,7 @@ function AddAccountDialog() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [priority, setPriority] = useState(0);
+  const [proxyUrl, setProxyUrl] = useState("");
   const [claudeCode, setClaudeCode] = useState("");
   const [claudeCodeSession, setClaudeCodeSession] = useState<{
     authUrl: string;
@@ -1972,6 +2088,7 @@ function AddAccountDialog() {
       setClaudeCodeSession(null);
       setName("");
       setPriority(0);
+      setProxyUrl("");
       toast.success("Claude Code account added");
     },
     onError: (mutationError) => setError(mutationError.message),
@@ -1989,7 +2106,9 @@ function AddAccountDialog() {
     setError(null);
     setClaudeCode("");
     setClaudeCodeSession(null);
-    await beginClaudeCodeLogin.mutateAsync();
+    // The proxy has to be set before the login starts: the OAuth handshake is
+    // the account's first outbound request and must use the same egress path.
+    await beginClaudeCodeLogin.mutateAsync({ proxyUrl: proxyUrl || null });
   }
 
   async function submitClaudeCodeLogin(event: FormEvent<HTMLFormElement>) {
@@ -2003,6 +2122,7 @@ function AddAccountDialog() {
       sessionId: claudeCodeSession.sessionId,
       name: name || undefined,
       priority,
+      proxyUrl: proxyUrl || null,
       code: claudeCode,
     });
   }
@@ -2037,6 +2157,20 @@ function AddAccountDialog() {
             value={priority}
             onChange={(event) => setPriority(numberFromInput(event.target.value))}
           />
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="account-proxy">Egress proxy (optional)</Label>
+          <Input
+            id="account-proxy"
+            value={proxyUrl}
+            onChange={(event) => setProxyUrl(event.target.value)}
+            placeholder="http://user:pass@127.0.0.1:8888"
+            autoComplete="off"
+            disabled={Boolean(claudeCodeSession)}
+          />
+          <p className="text-muted-foreground text-xs">
+            Routes this account's traffic, including the login below. Set it before generating the link.
+          </p>
         </div>
         <form className="grid gap-4" onSubmit={submitClaudeCodeLogin}>
           <div className="flex flex-col gap-2 sm:flex-row">

@@ -134,7 +134,8 @@ async function runProbe(accountId: string, trigger: ProbeTrigger): Promise<Probe
 
 async function executeProbe(accountId: string, trigger: ProbeTrigger): Promise<ProbeResult> {
   const now = Date.now();
-  if (!getAccount(accountId)) throw new Error(`account ${accountId} not found`);
+  const account = getAccount(accountId);
+  if (!account) throw new Error(`account ${accountId} not found`);
 
   const before = readCredentialsFile(accountId);
 
@@ -156,6 +157,8 @@ async function executeProbe(accountId: string, trigger: ProbeTrigger): Promise<P
       tmuxName,
       configDir: accountConfigDir(accountId),
       cwd: accountWorkspaceDir(accountId),
+      // Token refresh and /usage leave by the account's own egress path.
+      proxyUrl: account.proxy_url,
       // loginMethod:false — reaching the login screen means the refresh token is
       // dead; we detect it rather than auto-answering it.
       autoAnswer: { theme: true, loginMethod: false, security: true, trust: true },

@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { proxyFetchInit } from "./egress-proxy";
 
 const PUBLIC_IP_ENDPOINT = "https://one.one.one.one/cdn-cgi/trace";
 const PUBLIC_IP_CACHE_MS = 30_000;
@@ -13,47 +14,57 @@ interface CachedPublicIp {
   expiresAt: number;
 }
 
-let cached: CachedPublicIp | null = null;
-let retryAfter = 0;
-let inFlight: Promise<string | null> | null = null;
+// Each account's egress path has its own public IP, so cache/backoff state is
+// keyed by proxy URL ("" = the server's own direct path).
+const cached = new Map<string, CachedPublicIp>();
+const retryAfter = new Map<string, number>();
+const inFlight = new Map<string, Promise<string | null>>();
 
 /**
- * Resolve the public IP used by this server's outbound network path.
+ * Resolve the public IP of an account's outbound network path — its proxy's exit
+ * IP, or the server's own when the account goes direct.
  * Expired values are never used when a refresh fails: callers must fail closed.
  */
-export async function resolveServerPublicIp(
+export async function resolveEgressPublicIp(
+  proxyUrl: string | null = null,
   fetchImpl: FetchLike = globalThis.fetch,
   clock: Clock = Date.now,
 ): Promise<string | null> {
+  const key = proxyUrl ?? "";
   const now = clock();
-  if (cached && cached.expiresAt > now) return cached.ip;
-  cached = null;
-  if (retryAfter > now) return null;
+  const hit = cached.get(key);
+  if (hit && hit.expiresAt > now) return hit.ip;
+  cached.delete(key);
+  if ((retryAfter.get(key) ?? 0) > now) return null;
 
-  if (inFlight) return inFlight;
-  inFlight = fetchServerPublicIp(fetchImpl)
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+
+  const request = fetchEgressPublicIp(proxyUrl, fetchImpl)
     .then((ip) => {
       const resolvedAt = clock();
       if (ip) {
-        cached = { ip, expiresAt: resolvedAt + PUBLIC_IP_CACHE_MS };
-        retryAfter = 0;
+        cached.set(key, { ip, expiresAt: resolvedAt + PUBLIC_IP_CACHE_MS });
+        retryAfter.delete(key);
       } else {
-        retryAfter = resolvedAt + PUBLIC_IP_FAILURE_BACKOFF_MS;
+        retryAfter.set(key, resolvedAt + PUBLIC_IP_FAILURE_BACKOFF_MS);
       }
       return ip;
     })
     .finally(() => {
-      inFlight = null;
+      inFlight.delete(key);
     });
-  return inFlight;
+  inFlight.set(key, request);
+  return request;
 }
 
-async function fetchServerPublicIp(fetchImpl: FetchLike): Promise<string | null> {
+async function fetchEgressPublicIp(proxyUrl: string | null, fetchImpl: FetchLike): Promise<string | null> {
   try {
     const response = await fetchImpl(PUBLIC_IP_ENDPOINT, {
       headers: { accept: "text/plain" },
       redirect: "error",
       signal: AbortSignal.timeout(PUBLIC_IP_TIMEOUT_MS),
+      ...proxyFetchInit(proxyUrl),
     });
     if (!response.ok) return null;
 
@@ -69,7 +80,7 @@ async function fetchServerPublicIp(fetchImpl: FetchLike): Promise<string | null>
 
 /** Reset process-local resolver state between tests. */
 export function resetServerPublicIpCacheForTests(): void {
-  cached = null;
-  retryAfter = 0;
-  inFlight = null;
+  cached.clear();
+  retryAfter.clear();
+  inFlight.clear();
 }

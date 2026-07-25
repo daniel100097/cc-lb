@@ -29,12 +29,14 @@ export interface Account {
   pause_reason: string | null;
   usage_windows: string | null;
   usage_checked_at: number | null;
+  proxy_url: string | null;
 }
 
 export interface NewAccount {
   name: string;
   auth_type?: AccountAuthType;
   priority?: number;
+  proxy_url?: string | null;
 }
 
 export type AccountPatch = Partial<Omit<Account, "id">>;
@@ -65,6 +67,7 @@ export function createAccount(a: NewAccount): Account {
       authType: a.auth_type ?? "oauth_refresh",
       createdAt: now,
       priority: a.priority ?? 0,
+      proxyUrl: a.proxy_url ?? null,
     })
     .returning()
     .get();
@@ -101,6 +104,7 @@ export function updateAccount(id: string, patch: AccountPatch): void {
   add("pauseReason", patch.pause_reason);
   add("usageWindows", patch.usage_windows);
   add("usageCheckedAt", patch.usage_checked_at);
+  add("proxyUrl", patch.proxy_url);
 
   if (Object.keys(values).length === 0) return;
   orm.update(accountsTable).set(values).where(eq(accountsTable.id, id)).run();
@@ -157,6 +161,7 @@ interface AccountUpdateValues {
   pauseReason?: string | null;
   usageWindows?: string | null;
   usageCheckedAt?: number | null;
+  proxyUrl?: string | null;
 }
 
 function toAccount(row: AccountRow): Account {
@@ -184,6 +189,7 @@ function toAccount(row: AccountRow): Account {
     pause_reason: row.pauseReason,
     usage_windows: row.usageWindows,
     usage_checked_at: row.usageCheckedAt,
+    proxy_url: row.proxyUrl,
   };
 }
 

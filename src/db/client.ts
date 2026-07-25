@@ -193,6 +193,7 @@ function migrate() {
   ensureColumn("accounts", "rate_limit_5h_reset", "INTEGER");
   ensureColumn("accounts", "rate_limit_7d_utilization", "REAL");
   ensureColumn("accounts", "rate_limit_7d_reset", "INTEGER");
+  ensureColumn("accounts", "proxy_url", "TEXT");
   ensureColumn("sticky_sessions", "status", "TEXT NOT NULL DEFAULT 'active'");
   ensureColumn("sticky_sessions", "client_device_id", "TEXT");
   enforceStrictChatSessionRows();

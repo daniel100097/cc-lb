@@ -24,6 +24,8 @@ export const accounts = sqliteTable("accounts", {
   pauseReason: text("pause_reason"),
   usageWindows: text("usage_windows"),
   usageCheckedAt: integer("usage_checked_at"),
+  /** Outbound HTTP proxy for this account's traffic; null means direct. */
+  proxyUrl: text("proxy_url"),
 });
 
 export const settings = sqliteTable("settings", {

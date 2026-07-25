@@ -44,6 +44,7 @@ function account(id: string): Account {
     pause_reason: null,
     usage_windows: null,
     usage_checked_at: null,
+    proxy_url: null,
   };
 }
 

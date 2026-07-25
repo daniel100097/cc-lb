@@ -18,6 +18,8 @@ store.
   request logs.
 - Account onboarding through the normal `claude` CLI login flow.
 - Token refresh and usage probes driven by `claude` in `tmux`.
+- Optional per-account HTTP egress proxy covering every outbound request that
+  account makes.
 - Permanent per-chat account binding across errors, rate limits, restarts, and
   idle periods.
 - Routing strategies: `priority`, `round_robin`, `noisy_round_robin`,
@@ -130,6 +132,36 @@ To inspect a live Claude CLI pane:
 tmux -S /tmp/cc-lb-claude-code.tmux attach -t cc-lb-probe-<hex>
 ```
 
+## Per-Account Egress Proxy
+
+Each account can send its traffic through its own HTTP proxy, so pooled accounts
+egress from different addresses. Set it in the Add Account dialog or from the
+network button on an account row:
+
+```text
+http://127.0.0.1:8888
+http://user:pass@proxy.example.com:3128
+```
+
+Only `http://` and `https://` proxy URLs are accepted; SOCKS is not supported.
+An account with no proxy connects directly.
+
+A configured proxy covers everything the account does over HTTP:
+
+- the forwarded `/v1/*` request to Anthropic,
+- the `claude` CLI panes for its OAuth login, token refresh, and `/usage`
+  probes, via `HTTP_PROXY`/`HTTPS_PROXY`,
+- the public-IP lookup behind the `client-ip` header, so the value forwarded
+  upstream is the proxy's exit IP rather than the server's.
+
+Set the proxy before generating the login link: the OAuth handshake is the
+account's first outbound request and uses the same path as everything after it.
+
+The proxy is never bypassed. If it is unreachable, the request fails and falls
+over to another account instead of leaving by the direct path. Proxy passwords
+are stored in `data/` (already a secret store) and are masked everywhere they
+are displayed, including request logs.
+
 ## Routing
 
 Incoming proxy requests go to `/v1/*` on the dedicated proxy port (default
@@ -177,11 +209,14 @@ Malformed JSON and duplicate object keys are also rejected before a session is
 claimed or request traffic is sent upstream.
 
 `client-ip` is never synthesized when the client omits it. If the client sends
-that header, cc-lb discards its value, resolves the server's current public
-egress IP, and forwards only the resolved value. A resolution failure returns
-`503 server_public_ip_unavailable` before the session is claimed or account
-credentials are read. This field remains synchronized even when the separate
-forwarded-header stripping setting is enabled.
+that header, cc-lb discards its value, resolves the current public egress IP of
+the candidate account's own network path — its proxy's exit IP, or the server's
+when the account connects directly — and forwards only the resolved value. A
+candidate whose egress IP cannot be resolved is dropped before it can serve the
+request, and `503 server_public_ip_unavailable` is returned when none remain,
+before the session is claimed or account credentials are read. This field
+remains synchronized even when the separate forwarded-header stripping setting
+is enabled.
 
 A previously unseen session is pinned to an account as `pending` when a quota
 or count-token preflight establishes its binding. The first substantive

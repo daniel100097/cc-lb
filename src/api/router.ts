@@ -46,6 +46,7 @@ import {
   type RequestLogEntry,
 } from "../db/request-log";
 import { getSettings, patchSettings } from "../db/settings";
+import { maskProxyUrl, parseEgressProxyUrl } from "../egress-proxy";
 import { proxyPort } from "../ports";
 import {
   blockFilteredStickySessions,
@@ -78,6 +79,9 @@ const settingsPatchSchema = z
   })
   .strict();
 
+/** Null clears the account's proxy; a string is validated before it is stored. */
+const proxyUrlSchema = z.string().trim().max(500).nullable();
+
 const accountPatchSchema = z
   .object({
     id: z.string().min(1),
@@ -86,8 +90,11 @@ const accountPatchSchema = z
     paused: z.boolean().optional(),
     pauseReason: z.string().trim().max(300).nullable().optional(),
     needsReauth: z.boolean().optional(),
+    proxyUrl: proxyUrlSchema.optional(),
   })
   .strict();
+
+const claudeCodeLoginBeginSchema = z.object({ proxyUrl: proxyUrlSchema.optional() }).strict();
 
 const claudeCodeLoginCompleteSchema = z
   .object({
@@ -95,6 +102,7 @@ const claudeCodeLoginCompleteSchema = z
     code: z.string().trim().min(1).max(4_000),
     name: z.string().trim().max(120).optional(),
     priority: z.number().int().min(0).max(10_000).optional(),
+    proxyUrl: proxyUrlSchema.optional(),
   })
   .strict();
 
@@ -185,7 +193,9 @@ export const appRouter = router({
   accounts: router({
     list: publicProcedure.query(() => listAccounts().map((account) => toPublicAccount(account))),
 
-    claudeCodeLoginBegin: publicProcedure.mutation(() => beginClaudeCodeLogin()),
+    claudeCodeLoginBegin: publicProcedure
+      .input(claudeCodeLoginBeginSchema.optional())
+      .mutation(({ input }) => beginClaudeCodeLogin(normalizeProxyUrl(input?.proxyUrl))),
 
     claudeCodeLoginStatus: publicProcedure.input(claudeCodeLoginStatusSchema).query(({ input }) =>
       getClaudeCodeLoginStatus(input.sessionId),
@@ -195,10 +205,14 @@ export const appRouter = router({
     // config dir (with the CLI-written .credentials.json) is adopted into the
     // account's persistent dir; Claude Code owns tokens from there on.
     claudeCodeLoginComplete: publicProcedure.input(claudeCodeLoginCompleteSchema).mutation(async ({ input }) => {
+      // Validate before the login is consumed so a bad proxy URL cannot strand a
+      // completed session behind an account that never gets created.
+      const proxyUrl = normalizeProxyUrl(input.proxyUrl);
       const login = await completeClaudeCodeLogin(input.sessionId, input.code);
       const account = createAccount({
         name: input.name?.trim() || "Claude Code account",
         priority: input.priority ?? 0,
+        proxy_url: proxyUrl,
       });
       adoptLoginConfigDir(account.id, login.configDir);
       void probeAccount(account.id, "seed").catch(() => {});
@@ -229,6 +243,7 @@ export const appRouter = router({
         patch.pause_reason = input.pauseReason;
       }
       if (input.needsReauth !== undefined) patch.needs_reauth = input.needsReauth ? 1 : 0;
+      if (input.proxyUrl !== undefined) patch.proxy_url = normalizeProxyUrl(input.proxyUrl);
 
       updateAccount(input.id, patch);
       const account = getAccount(input.id);
@@ -435,6 +450,12 @@ export const appRouter = router({
 
 export type AppRouter = typeof appRouter;
 
+/** Empty/null clears the proxy; anything else must be a valid http(s) proxy URL. */
+function normalizeProxyUrl(raw: string | null | undefined): string | null {
+  if (raw === undefined || raw === null || raw.trim() === "") return null;
+  return parseEgressProxyUrl(raw);
+}
+
 function toPublicAccount(account: Account, now = Date.now()) {
   const state = toState(account, now);
   const available = isAvailable(state, now);
@@ -479,6 +500,9 @@ function toPublicAccount(account: Account, now = Date.now()) {
     pauseReason: account.pause_reason,
     usage: parseUsageWindows(account.usage_windows),
     usageCheckedAt: account.usage_checked_at,
+    hasProxy: account.proxy_url !== null,
+    // Masked: this query polls every few seconds, so the password never leaves the server.
+    proxyUrl: account.proxy_url === null ? null : maskProxyUrl(account.proxy_url),
     available,
   };
 }

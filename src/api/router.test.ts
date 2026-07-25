@@ -119,6 +119,34 @@ describe("appRouter accounts", () => {
     expect(resumed.pauseReason).toBeNull();
   });
 
+  test("update validates, masks, and clears the account egress proxy", async () => {
+    const account = createAccount({ name: "Proxy me" });
+    seedAccountCredentials(account.id, { accessToken: "access-p", refreshToken: "refresh-p" });
+
+    expect((await caller.accounts.update({ id: account.id, proxyUrl: null })).hasProxy).toBe(false);
+
+    const set = await caller.accounts.update({
+      id: account.id,
+      proxyUrl: "  http://user:hunter2@127.0.0.1:8888  ",
+    });
+    expect(set.hasProxy).toBe(true);
+    // The password is stored but never returned.
+    expect(set.proxyUrl).toBe("http://user:***@127.0.0.1:8888/");
+    expect(getAccount(account.id)?.proxy_url).toBe("http://user:hunter2@127.0.0.1:8888/");
+
+    await expect(caller.accounts.update({ id: account.id, proxyUrl: "socks5://127.0.0.1:1080" })).rejects.toThrow(
+      "SOCKS",
+    );
+    await expect(caller.accounts.update({ id: account.id, proxyUrl: "127.0.0.1:8888" })).rejects.toThrow("full URL");
+    // A rejected update leaves the working proxy in place.
+    expect(getAccount(account.id)?.proxy_url).toBe("http://user:hunter2@127.0.0.1:8888/");
+
+    const cleared = await caller.accounts.update({ id: account.id, proxyUrl: null });
+    expect(cleared.hasProxy).toBe(false);
+    expect(cleared.proxyUrl).toBeNull();
+    expect(getAccount(account.id)?.proxy_url).toBeNull();
+  });
+
   test("adds Claude Code accounts through the CLI login flow", async () => {
     process.env.CLAUDE_CODE_LOGIN_COMMAND =
       "test \"$CLAUDE_CODE_NO_FLICKER\" = '0' || exit 42; printf 'Choose the text style that looks best with your terminal\\n'; read theme; printf 'Select login method:\\n'; read method; printf 'https://claude.com/cai/oauth/authorize?code=true&client_id=test&state=router\\nPaste code here if prompted > '; read code; printf '\\nSecurity notes:\\nPress Enter to continue...\\n'; read security; printf '\\nQuick safety check: Is this a project you created or one you trust?\\n1. Yes, I trust this folder\\nEnter to confirm\\n'; read trust; mkdir -p \"$CLAUDE_CONFIG_DIR\"; printf '%s' '{\"claudeAiOauth\":{\"accessToken\":\"access-router\",\"refreshToken\":\"refresh-router\",\"expiresAt\":1800000000000,\"scopes\":[\"user:inference\"]}}' > \"$CLAUDE_CONFIG_DIR/.credentials.json\"; printf '\\nWelcome back Router!\\nTips for getting started\\n'; sleep 30";

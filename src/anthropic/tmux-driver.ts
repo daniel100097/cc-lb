@@ -2,6 +2,8 @@
 // dashboard login flow (claude-code-cli.ts) and the account probe
 // (account-probe.ts). One tmux server on a dedicated socket hosts all panes.
 
+import { PROXY_ENV_KEYS, proxyEnvVars } from "../egress-proxy";
+
 const DEFAULT_TMUX_SOCKET_PATH = "/tmp/cc-lb-claude-code.tmux";
 const MAX_OUTPUT_CHARS = 80_000;
 const PROMPT_RETRY_MS = 1_500;
@@ -19,6 +21,8 @@ export interface PaneSessionOptions {
   tmuxName: string;
   configDir: string;
   cwd?: string;
+  /** Egress proxy for the CLI in this pane; null/omitted runs it direct. */
+  proxyUrl?: string | null;
   autoAnswer: PromptAutoAnswer;
   /** Called after every capture refresh, before waiters are checked. */
   onOutput?: (session: PaneSession) => void;
@@ -64,6 +68,7 @@ export function shellQuote(value: string): string {
 export function buildClaudeCliEnv(
   baseEnv: NodeJS.ProcessEnv,
   configDir = baseEnv.CLAUDE_CONFIG_DIR ?? "./data/claude",
+  proxyUrl: string | null = null,
 ): Record<string, string> {
   const localBin = `${process.cwd()}/node_modules/.bin`;
   return {
@@ -73,6 +78,9 @@ export function buildClaudeCliEnv(
     CLAUDE_CODE_NO_FLICKER: "0",
     CLAUDE_CODE_LOGIN_COMMAND: baseEnv.CLAUDE_CODE_LOGIN_COMMAND ?? shellQuote(`${localBin}/claude`),
     CLAUDE_CONFIG_DIR: configDir,
+    // The account's egress proxy, so the CLI's own HTTP traffic (login, token
+    // refresh, /usage) leaves by the same path as its proxied requests.
+    ...proxyEnvVars(proxyUrl),
   };
 }
 
@@ -82,6 +90,9 @@ export function buildTmuxClaudeCommand(env: Record<string, string>): string {
     ["TERM", env.TERM],
     ["CLAUDE_CODE_NO_FLICKER", env.CLAUDE_CODE_NO_FLICKER],
     ["CLAUDE_CONFIG_DIR", env.CLAUDE_CONFIG_DIR],
+    // Explicit exports are the only deterministic way env reaches a pane: one
+    // tmux server hosts every account, so per-account values cannot be inherited.
+    ...PROXY_ENV_KEYS.map((key) => [key, env[key]]),
   ]
     .filter((entry): entry is [string, string] => Boolean(entry[1]))
     .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
@@ -99,7 +110,7 @@ export function buildTmuxClaudeCommand(env: Record<string, string>): string {
 }
 
 export async function startPaneSession(options: PaneSessionOptions): Promise<PaneSession> {
-  const env = buildClaudeCliEnv(process.env, options.configDir);
+  const env = buildClaudeCliEnv(process.env, options.configDir, options.proxyUrl ?? null);
   const command = buildTmuxClaudeCommand(env);
   try {
     await runTmux([

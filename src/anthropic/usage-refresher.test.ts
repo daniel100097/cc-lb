@@ -45,6 +45,7 @@ function account(overrides: Partial<Account>): Account {
     pause_reason: null,
     usage_windows: null,
     usage_checked_at: null,
+    proxy_url: null,
     ...overrides,
   };
 }

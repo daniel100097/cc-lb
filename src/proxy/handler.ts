@@ -13,7 +13,8 @@ import { isAvailable, toState, type AccountState, type StrategyName } from "../b
 import { bumpRequestCount, listAccounts, updateAccount, type Account } from "../db/accounts";
 import { validateApiKeySecret, type ApiKey } from "../db/api-keys";
 import { getSettings, type Settings } from "../db/settings";
-import { resolveServerPublicIp } from "../server-public-ip";
+import { maskProxyUrl, proxyFetchInit } from "../egress-proxy";
+import { resolveEgressPublicIp } from "../server-public-ip";
 import { dashboardPort } from "../ports";
 import {
   bindStickyClientDeviceId,
@@ -84,12 +85,6 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
   let stickyBinding = getStickyIdentity(stickyKey);
   if (stickyBinding?.status === "blocked") return sessionBlocked();
 
-  let serverPublicIp: string | null = null;
-  if (req.headers.has(CLIENT_IP_HEADER)) {
-    serverPublicIp = await resolveServerPublicIp();
-    if (!serverPublicIp) return serverPublicIpUnavailable();
-  }
-
   // Buffer once for parsing, identity patching, and exact-byte forwarding.
   const bodyBuf = req.method === "GET" || req.method === "HEAD" ? null : await req.arrayBuffer();
   const rawRequest = settings.rawHttpLoggingEnabled ? rawRequestSnapshot(req, url, bodyBuf) : null;
@@ -156,6 +151,19 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
   let stickyPinnedId = stickyBinding?.accountId ?? null;
   let ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
 
+  // client-ip is only ever rewritten when the client already sent it, so egress
+  // IPs are resolved only in that case. Each candidate reports its own outbound
+  // path — its proxy's exit IP, or the server's when it goes direct — and a
+  // candidate whose IP will not resolve is dropped so the header can never
+  // contradict the socket upstream actually sees. Resolving here, before the
+  // sticky claim, keeps an unresolvable request from pinning a session.
+  const egressIpByAccount = req.headers.has(CLIENT_IP_HEADER) ? await resolveEgressIps(ordered) : null;
+  if (egressIpByAccount) {
+    const resolvable = ordered.filter((account) => egressIpByAccount.has(account.id));
+    if (ordered.length > 0 && resolvable.length === 0) return serverPublicIpUnavailable();
+    ordered = resolvable;
+  }
+
   // Every new session starts pending. This pins preflights without allowing a
   // quota/count-token request to make later assistant history look known.
   if (!stickyPinnedId && ordered[0]) {
@@ -168,6 +176,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
     if (stickyBinding.status === "blocked") return sessionBlocked();
     stickyPinnedId = stickyBinding.accountId;
     ordered = orderAccounts(accounts, settings, stickyKey, stickyPinnedId, now);
+    if (egressIpByAccount) ordered = ordered.filter((account) => egressIpByAccount.has(account.id));
   }
 
   if (stickyBinding && deviceValidation.clientDeviceId) {
@@ -243,7 +252,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       bodySignals,
       accountUuid,
       deviceId,
-      serverPublicIp,
+      serverPublicIp: egressIpByAccount?.get(account.id) ?? null,
       sessionId,
       wantsStream: isRecord(parsedBody) && parsedBody.stream === true,
       rawRequest,
@@ -309,7 +318,7 @@ async function attempt(
   );
   const outboundBody = buildAttemptBody(bodyBuf, context);
   const rawUpstreamRequest = context.rawRequest
-    ? upstreamRequestSnapshot(req.method, target, headers, outboundBody)
+    ? upstreamRequestSnapshot(req.method, target, headers, outboundBody, account.proxy_url)
     : null;
 
   let upstream: Response;
@@ -335,6 +344,9 @@ async function attempt(
           body: outboundBody && outboundBody.byteLength > 0 ? outboundBody : undefined,
           signal: AbortSignal.any([req.signal, headerAbort.signal, AbortSignal.timeout(totalTimeoutMs)]),
           keepalive: false,
+          // A configured account proxy is never bypassed: a dead proxy surfaces
+          // as a network_error and fails over instead of leaking direct traffic.
+          ...proxyFetchInit(account.proxy_url),
         });
       } finally {
         clearTimeout(headerTimer);
@@ -503,6 +515,27 @@ async function attempt(
     statusText: upstream.statusText,
     headers: responseHeaders,
   });
+}
+
+/**
+ * Egress public IP per candidate account, keyed by account id. Accounts sharing
+ * a proxy share one lookup, and every lookup is started before the first await
+ * so distinct proxies resolve concurrently. Accounts missing from the result
+ * have no usable IP and must not serve the request.
+ */
+async function resolveEgressIps(accounts: Account[]): Promise<Map<string, string>> {
+  const byProxy = new Map<string, Promise<string | null>>();
+  for (const account of accounts) {
+    const key = account.proxy_url ?? "";
+    if (!byProxy.has(key)) byProxy.set(key, resolveEgressPublicIp(account.proxy_url));
+  }
+
+  const resolved = new Map<string, string>();
+  for (const account of accounts) {
+    const ip = await byProxy.get(account.proxy_url ?? "");
+    if (ip) resolved.set(account.id, ip);
+  }
+  return resolved;
 }
 
 /** Build the ordered candidate list: sticky-pinned first, then strategy order. */
@@ -1098,14 +1131,20 @@ function upstreamRequestSnapshot(
   target: string,
   headers: Headers,
   body: ArrayBuffer | null,
+  proxyUrl: string | null,
 ): RawRequestSnapshot {
   return {
-    headers: serializeUpstreamRequestHead(method, target, headers),
+    headers: serializeUpstreamRequestHead(method, target, headers, proxyUrl),
     body: body && body.byteLength > 0 ? bufferToRawBody(body, headers.get("content-type")) : null,
   };
 }
 
-function serializeUpstreamRequestHead(method: string, url: string, headers: Headers): string {
+function serializeUpstreamRequestHead(
+  method: string,
+  url: string,
+  headers: Headers,
+  proxyUrl: string | null,
+): string {
   const redacted = new Headers(headers);
   const authorization = redacted.get("authorization");
   // The outbound authorization carries a live account OAuth token — never persist it.
@@ -1116,6 +1155,8 @@ function serializeUpstreamRequestHead(method: string, url: string, headers: Head
     {
       method,
       url,
+      // Which egress path this attempt took; the proxy password is never persisted.
+      proxy: proxyUrl ? maskProxyUrl(proxyUrl) : null,
       headers: headersObject(redacted),
     },
     null,

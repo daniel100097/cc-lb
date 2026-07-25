@@ -66,7 +66,16 @@ export interface ClaudeCodeLoginStatusResult {
   tmuxAttachCommand: string;
 }
 
-export async function beginClaudeCodeLogin(now = Date.now()): Promise<ClaudeCodeLoginBeginResult> {
+/**
+ * The proxy is needed here, before the account row exists: the OAuth handshake
+ * is the account's first outbound request, so it must already use the egress
+ * path every later request will. The caller persists the same value on the
+ * account it creates at completion.
+ */
+export async function beginClaudeCodeLogin(
+  proxyUrl: string | null = null,
+  now = Date.now(),
+): Promise<ClaudeCodeLoginBeginResult> {
   cleanupExpiredSessions(now);
 
   const id = randomUUID();
@@ -75,6 +84,7 @@ export async function beginClaudeCodeLogin(now = Date.now()): Promise<ClaudeCode
   const pane = await startPaneSession({
     tmuxName: tmuxSessionName(id),
     configDir,
+    proxyUrl,
     autoAnswer: LOGIN_AUTO_ANSWER,
     onOutput: onLoginPaneOutput,
   });
