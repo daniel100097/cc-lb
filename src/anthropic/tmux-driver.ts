@@ -216,6 +216,7 @@ function updateExitMarker(session: PaneSession): void {
 
 /** Auto-answer Claude Code startup prompts (theme/login/security/trust), gated per prompt. */
 function driveClaudeStartupPrompts(session: PaneSession, now = Date.now()): void {
+  if (session.exited) return;
   const screen = currentScreenText(session.output);
   if (claudeScreenReady(screen)) return;
 
@@ -228,10 +229,28 @@ function driveClaudeStartupPrompts(session: PaneSession, now = Date.now()): void
     trust: session.autoAnswer.trust,
   };
   if (!allowed[latestPrompt]) return;
+  const key = latestPrompt === "trust" ? trustPromptKey(screen) : "C-m";
+  if (key === null) return;
   const lastSentAt = session.promptEnterSentAt[latestPrompt];
   if (now - lastSentAt < PROMPT_RETRY_MS) return;
   session.promptEnterSentAt[latestPrompt] = now;
-  void sendTmuxKey(session.tmuxName, "C-m");
+  void sendTmuxKey(session.tmuxName, key);
+}
+
+/** Navigate first, then confirm only after a later capture shows Yes selected. */
+export function trustPromptKey(screen: string): string | null {
+  const promptStart = screen.lastIndexOf("Quick safety check");
+  if (promptStart < 0) return null;
+  const lines = screen.slice(promptStart).split("\n");
+  const yes = lines.findIndex((line) => line.includes("Yes, I trust this folder"));
+  const no = lines.findIndex((line) => /No, (?:exit|continue without these permissions)/.test(line));
+  if (yes < 0) return null;
+  const selected = /^\s*[❯›>→─-]\s*/;
+  if (selected.test(lines[yes]!)) return "C-m";
+  if (no >= 0 && selected.test(lines[no]!)) return yes > no ? "Down" : "Up";
+  // Older numbered prompts default to option 1, including the login CLI fixtures.
+  if (no < 0 && /^\s*1\. Yes, I trust this folder\s*$/.test(lines[yes]!)) return "C-m";
+  return null;
 }
 
 export function latestClaudePrompt(screen: string): ClaudePrompt | null {
