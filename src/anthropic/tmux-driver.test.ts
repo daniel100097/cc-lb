@@ -2,9 +2,22 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { killPaneSession, shellQuote, startPaneSession, trustPromptKey, waitForOutput } from "./tmux-driver";
+import { claudeScreenReady, killPaneSession, shellQuote, startPaneSession, trustPromptKey, waitForOutput } from "./tmux-driver";
 
 const prompt = "Quick safety check: Is this a project you created or one you trust?\n";
+
+test("recognizes the current input screen and legacy welcome banners", () => {
+  const header = "▐▛███▛█   Claude Code v2.1.261\nOpus 5 (1M context) · Claude Max\n/app\n";
+  const input = '────────────────\n❯ Try "edit <filepath> to..."\n────────────────\n';
+  expect(claudeScreenReady(`${header}Auto mode is now Claude Code's default permission mode.\n${input}Press Ctrl-C again to exit`)).toBe(true);
+  expect(claudeScreenReady(`${header}────────────────\n❯ \n────────────────`)).toBe(true);
+  expect(claudeScreenReady("Welcome back")).toBe(true);
+  expect(claudeScreenReady("Tips for getting started")).toBe(true);
+  expect(claudeScreenReady(header)).toBe(false);
+  expect(claudeScreenReady(input)).toBe(false);
+  expect(claudeScreenReady(`${header}${prompt}─ No, exit\n  Yes, I trust this folder`)).toBe(false);
+  expect(claudeScreenReady(`${header}Select login method:\n❯ 1. Claude account`)).toBe(false);
+});
 
 test("trust navigation follows the selected label in either option order", () => {
   expect(trustPromptKey(`${prompt}─ No, exit\n  Yes, I trust this folder`)).toBe("Down");

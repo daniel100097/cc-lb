@@ -24,7 +24,7 @@ const PANEL =
 function fakeRefreshCli(accessToken: string, expiresAt: number): string {
   const creds = `{"claudeAiOauth":{"accessToken":"${accessToken}","refreshToken":"r","expiresAt":${expiresAt},"scopes":["user:inference"]}}`;
   return (
-    `printf 'Welcome back\\n'; mkdir -p "$CLAUDE_CONFIG_DIR"; ` +
+    `printf 'Claude Code v2.1.261\\nAuto mode is now the default.\\n────────────────\\n❯ Try editing a file\\n────────────────\\n'; mkdir -p "$CLAUDE_CONFIG_DIR"; ` +
     `printf '%s' '${creds}' > "$CLAUDE_CONFIG_DIR/.credentials.json"; ` +
     `read cmd; printf '${PANEL}'; sleep 30`
   );

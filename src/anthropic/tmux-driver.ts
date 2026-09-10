@@ -54,7 +54,11 @@ export type ClaudePrompt = "theme" | "login_method" | "paste_code" | "security" 
 const READY_MARKERS = ["Welcome back", "Tips for getting started"] as const;
 
 export function claudeScreenReady(screen: string): boolean {
-  return READY_MARKERS.some((marker) => screen.includes(marker));
+  if (READY_MARKERS.some((marker) => screen.includes(marker))) return true;
+  // Recent versions replace the welcome banner with a version header and a
+  // bordered input prompt. Require both so startup menus don't count as ready.
+  return /Claude Code v\d+\.\d+\.\d+/.test(screen)
+    && /^─{3,}\s*\n[❯>]\s*[^\n]*\n─{3,}/m.test(screen);
 }
 
 export function getClaudeCodeTmuxSocketPath(baseEnv: NodeJS.ProcessEnv = process.env): string {
