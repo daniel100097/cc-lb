@@ -246,10 +246,10 @@ export function trustPromptKey(screen: string): string | null {
   const no = lines.findIndex((line) => /No, (?:exit|continue without these permissions)/.test(line));
   if (yes < 0) return null;
   const selected = /^\s*[❯›>→─-]\s*/;
-  if (selected.test(lines[yes]!)) return "C-m";
-  if (no >= 0 && selected.test(lines[no]!)) return yes > no ? "Down" : "Up";
+  if (selected.test(lines[yes] ?? "")) return "C-m";
+  if (no >= 0 && selected.test(lines[no] ?? "")) return yes > no ? "Down" : "Up";
   // Older numbered prompts default to option 1, including the login CLI fixtures.
-  if (no < 0 && /^\s*1\. Yes, I trust this folder\s*$/.test(lines[yes]!)) return "C-m";
+  if (no < 0 && /^\s*1\. Yes, I trust this folder\s*$/.test(lines[yes] ?? "")) return "C-m";
   return null;
 }
 
