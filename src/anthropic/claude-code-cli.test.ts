@@ -22,6 +22,7 @@ describe("Claude Code CLI login parsing", () => {
     expect(env.CLAUDE_CODE_LOGIN_COMMAND).toBe(`'${process.cwd()}/node_modules/.bin/claude'`);
     expect(env.PATH?.startsWith(`${process.cwd()}/node_modules/.bin:`)).toBe(true);
     expect(env.CLAUDE_CODE_NO_FLICKER).toBe("0");
+    expect(env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBe("1");
   });
 
   test("uses explicit tmux and credentials paths", () => {
@@ -35,11 +36,14 @@ describe("Claude Code CLI login parsing", () => {
       PATH: "/tmp/bin",
       TERM: "xterm-256color",
       CLAUDE_CODE_NO_FLICKER: "0",
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
       CLAUDE_CONFIG_DIR: "/tmp/claude",
       CLAUDE_CODE_LOGIN_COMMAND: "printf ready",
     });
 
     expect(command).toContain("printf ready");
+    expect(command).toContain("export CLAUDE_CODE_NO_FLICKER='0'");
+    expect(command).toContain("export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN='1'");
     expect(command).toContain("[cc-lb] Claude Code process exited with status");
     expect(command).toContain("sleep 600");
     expect(command).not.toContain("HTTP_PROXY");

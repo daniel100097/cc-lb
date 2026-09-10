@@ -76,6 +76,7 @@ export function buildClaudeCliEnv(
     PATH: `${localBin}:${baseEnv.PATH ?? ""}`,
     TERM: baseEnv.TERM ?? "xterm-256color",
     CLAUDE_CODE_NO_FLICKER: "0",
+    CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
     CLAUDE_CODE_LOGIN_COMMAND: baseEnv.CLAUDE_CODE_LOGIN_COMMAND ?? shellQuote(`${localBin}/claude`),
     CLAUDE_CONFIG_DIR: configDir,
     // The account's egress proxy, so the CLI's own HTTP traffic (login, token
@@ -89,6 +90,7 @@ export function buildTmuxClaudeCommand(env: Record<string, string>): string {
     ["PATH", env.PATH],
     ["TERM", env.TERM],
     ["CLAUDE_CODE_NO_FLICKER", env.CLAUDE_CODE_NO_FLICKER],
+    ["CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN],
     ["CLAUDE_CONFIG_DIR", env.CLAUDE_CONFIG_DIR],
     // Explicit exports are the only deterministic way env reaches a pane: one
     // tmux server hosts every account, so per-account values cannot be inherited.
