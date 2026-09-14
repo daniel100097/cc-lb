@@ -735,7 +735,7 @@ function validateClientDeviceIdentity(
   signals: BodyIdentitySignals,
   binding: StickyIdentityBinding | null,
 ): DeviceValidation {
-  if (containsOffPathDeviceField(body, bodyText, signals)) {
+  if (containsOffPathDeviceField(body, signals)) {
     return { clientDeviceId: null, response: unexpectedDeviceIdentity() };
   }
 
@@ -833,11 +833,11 @@ function unknownValueContains(value: unknown, needle: string): boolean {
   return Object.entries(value).some(([key, nested]) => key.includes(needle) || unknownValueContains(nested, needle));
 }
 
-function containsOffPathDeviceField(body: unknown, bodyText: string | null, signals: BodyIdentitySignals): boolean {
-  // An unescaped device-id property in the outer body is never an expected
-  // Claude Code identity field. This also catches duplicate keys JSON.parse hid.
-  if (bodyText && /(?:^|[,{]\s*)"device(?:_|-)?id"\s*:/i.test(bodyText)) return true;
-  if (containsDeviceKey(body)) return true;
+function containsOffPathDeviceField(body: unknown, signals: BodyIdentitySignals): boolean {
+  // Tool schemas and message content describe user data, not client identity.
+  // The original identity value is still checked everywhere separately, and
+  // duplicate JSON keys are rejected by the request admission check.
+  if (containsDeviceKey(body, [], true)) return true;
   if (!signals.userIdEnvelope || !signals.userIdText) return false;
 
   const expectedExactKeys = signals.hasDeviceId ? 1 : 0;
@@ -848,11 +848,17 @@ function containsOffPathDeviceField(body: unknown, bodyText: string | null, sign
   });
 }
 
-function containsDeviceKey(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(containsDeviceKey);
+function containsDeviceKey(value: unknown, path: string[] = [], allowContent = false): boolean {
+  if (allowContent && path.length === 3 && (
+    (path[0] === "tools" && path[2] === "input_schema") ||
+    (path[0] === "messages" && path[2] === "content")
+  )) return false;
+  if (Array.isArray(value)) {
+    return value.some((item, index) => containsDeviceKey(item, [...path, String(index)], allowContent));
+  }
   if (!isRecord(value)) return false;
   return Object.entries(value).some(
-    ([key, nested]) => normalizeIdentityKey(key) === "deviceid" || containsDeviceKey(nested),
+    ([key, nested]) => normalizeIdentityKey(key) === "deviceid" || containsDeviceKey(nested, [...path, key], allowContent),
   );
 }
 

@@ -472,6 +472,62 @@ describe("handleProxy", () => {
     }
   });
 
+  test("allows device parameters in MCP schemas and tool content without treating them as identity", async () => {
+    for (const account of listAccounts()) updateAccount(account.id, { paused: 1 });
+    const account = createAccount({ name: "MCP device tools" });
+    seedAccountCredentials(account.id, {
+      accessToken: "mcp-access",
+      refreshToken: "mcp-refresh",
+      expiresAt: Date.now() + 3_600_000,
+      machineId: "account-machine-id",
+    });
+    const screenshotTool = {
+      name: "device_screenshot",
+      input_schema: {
+        type: "object",
+        properties: { deviceId: { type: "string" }, device_id: { type: "string" } },
+      },
+    };
+    const tools = [screenshotTool];
+    const sessionId = "mcp-device-parameters";
+    const metadata = { user_id: JSON.stringify({
+      device_id: "original-machine-id", account_uuid: "client-account", session_id: sessionId,
+    }) };
+    const { bodies, restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 1 } }));
+    try {
+      const messages: unknown[] = [{ role: "user", content: "Take a screenshot" }];
+      async function send() {
+        return handleProxy(new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-claude-code-session-id": sessionId },
+          body: JSON.stringify({ model: "claude-mcp-device", messages, tools, metadata }),
+        }), new URL("http://cc-lb.test/v1/messages"));
+      }
+      const first = await send();
+      expect(first.status).toBe(200);
+      await first.text();
+      messages.push(
+        { role: "assistant", content: [{ type: "tool_use", id: "tool-1", name: "device_screenshot", input: { deviceId: "simulator-1", device_id: "simulator-1" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: [{ type: "text", text: '{"device_id":"simulator-1"}' }] }] },
+      );
+      const next = await send();
+      expect(next.status).toBe(200);
+      await next.text();
+      expect(decodeBody(bodies[1]).tools).toEqual(tools);
+      expect(decodeBody(bodies[1]).messages).toEqual(messages);
+      expect(JSON.parse(decodeBody(bodies[1]).metadata.user_id).device_id).toBe("account-machine-id");
+
+      // User data may name a device, but must still never leak the actual client identity.
+      screenshotTool.input_schema.properties.deviceId = { type: "original-machine-id" };
+      const leaked = await send();
+      expect(leaked.status).toBe(403);
+      expect((await leaked.json()).error).toBe("unexpected_device_identity");
+      expect(bodies).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+
   test("rejects an original device id leaked outside recognized identity fields", async () => {
     const originalDeviceId = "client-device-fingerprint-0123456789";
     const { inits, restore } = captureFetch(() => Response.json({ unexpected: true }));
