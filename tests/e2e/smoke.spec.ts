@@ -1,6 +1,15 @@
-import { expect, test } from "@playwright/test";
+import { type BrowserContext, expect, test } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
+
+const dashboardPassword = process.env.E2E_DASHBOARD_PASSWORD || "cc-lb-e2e-password";
+
+async function signIn({ context }: { context: BrowserContext }) {
+  const response = await context.request.post("/api/auth/login", {
+    data: { password: dashboardPassword },
+  });
+  expect(response.ok()).toBe(true);
+}
 
 function proxyBaseUrl(): string {
   const explicitProxyUrl = process.env.E2E_PROXY_BASE_URL;
@@ -15,7 +24,30 @@ function proxyBaseUrl(): string {
   return dashboardUrl.origin;
 }
 
+test("requires a password and keeps the dashboard session until logout", async ({ page, context }) => {
+  await page.goto("/accounts");
+  await expect(page.getByText("Dashboard password required.")).toBeVisible();
+  expect((await context.request.get("/api/trpc/health")).status()).toBe(401);
+  expect((await context.request.get("/api/accounts/1/terminal")).status()).toBe(401);
+
+  await page.getByLabel("Password").fill(`${dashboardPassword}-wrong`);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByText("Dashboard password required.")).toBeVisible();
+
+  await page.getByLabel("Password").fill(dashboardPassword);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+
+  expect((await context.request.post("/api/auth/logout")).status()).toBe(204);
+  await page.goto("/accounts");
+  await expect(page.getByText("Dashboard password required.")).toBeVisible();
+});
+
 test.describe("cc-lb dashboard with seeded data", () => {
+  test.beforeEach(signIn);
+
   test("keeps dashboard and Claude proxy routes on separate listeners", async ({ request }) => {
     const dashboardHealth = await request.get("/api/health");
     expect(dashboardHealth.status()).toBe(200);
@@ -146,6 +178,7 @@ test.describe("cc-lb dashboard with seeded data", () => {
 
 test.describe("cc-lb mobile navigation", () => {
   test.use({ viewport: { width: 390, height: 844 } });
+  test.beforeEach(signIn);
 
   test("routes between primary pages on a narrow viewport", async ({ page }) => {
     await page.goto("/");

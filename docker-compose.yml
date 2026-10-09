@@ -11,7 +11,7 @@ services:
       DASHBOARD_PORT: "8484"
       PROXY_PORT: "8485"
       DB_PATH: /app/data/cc-lb.db
-      # DASHBOARD_PASSWORD: changeme
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-changeme}
       # To capture what cc-lb forwards upstream, start the compare-proxy sidecar
       # (`docker compose --profile debug up`) and uncomment:
       # ANTHROPIC_API_BASE: http://compare-proxy:8788

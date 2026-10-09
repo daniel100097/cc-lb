@@ -25,7 +25,7 @@ store.
 - Routing strategies: `priority`, `round_robin`, `noisy_round_robin`,
   `least_used`, `weighted_random`, and `session_reset_drain`.
 - Optional proxy API-key enforcement with account scoping and model filters.
-- Optional dashboard password for the SPA and tRPC API.
+- Dashboard password for the SPA, tRPC API, and account terminals.
 - SQLite persistence with Bun, React, Tailwind, and Docker support.
 
 ## Quick Start
@@ -41,6 +41,9 @@ Open the dashboard:
 ```text
 http://localhost:8484
 ```
+
+Sign in with `changeme`. Set `DASHBOARD_PASSWORD` in your environment or `.env`
+file to replace the default password before sharing access.
 
 Add accounts from the dashboard, then point Claude Code at cc-lb:
 
@@ -72,7 +75,7 @@ services:
       DB_PATH: /app/data/cc-lb.db
       CLAUDE_CONFIG_DIR: /app/data/claude
       CLAUDE_ACCOUNTS_DIR: /app/data/claude-accounts
-      # DASHBOARD_PASSWORD: changeme
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-changeme}
     restart: unless-stopped
 ```
 
@@ -256,10 +259,11 @@ blocked tombstones.
 | `CLAUDE_ACCOUNTS_DIR` | `./data/claude-accounts` | Per-account Claude config directories. |
 | `CLAUDE_CODE_LOGIN_COMMAND` | repo-local `claude` binary | Command run inside `tmux` for login and refresh. |
 | `CLAUDE_CODE_TMUX_SOCKET` | `/tmp/cc-lb-claude-code.tmux` | Dedicated tmux socket path. |
-| `DASHBOARD_PASSWORD` | unset | Protects the dashboard and `/api/trpc` when set. |
+| `DASHBOARD_PASSWORD` | `changeme` | Password for the dashboard, `/api/trpc`, and account terminals. Empty values also use the default. |
 | `ANTHROPIC_API_BASE` | `https://api.anthropic.com` | Upstream Anthropic API base URL. |
 
-Dashboard password auth does not protect the proxy port or `/v1/*`. Use the
+Health checks at `/api/health` remain public. Dashboard password auth does not
+protect the proxy port or `/v1/*`. Use the
 dashboard's API-key setting when the proxy endpoint itself should reject
 unknown clients.
 

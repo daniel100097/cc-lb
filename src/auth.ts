@@ -3,13 +3,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const SESSION_COOKIE = "cc_lb_session";
 const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
 
-function dashboardPassword(): string | null {
-  const password = process.env.DASHBOARD_PASSWORD;
-  return password && password.length > 0 ? password : null;
-}
-
-export function isDashboardAuthEnabled(): boolean {
-  return dashboardPassword() !== null;
+function dashboardPassword(): string {
+  return process.env.DASHBOARD_PASSWORD || "changeme";
 }
 
 function sessionToken(password: string): string {
@@ -27,7 +22,13 @@ function cookieValue(req: Request, name: string): string | null {
   if (!cookie) return null;
   for (const part of cookie.split(";")) {
     const [rawKey, rawValue] = part.trim().split("=");
-    if (rawKey === name && rawValue !== undefined) return decodeURIComponent(rawValue);
+    if (rawKey === name && rawValue !== undefined) {
+      try {
+        return decodeURIComponent(rawValue);
+      } catch {
+        return null;
+      }
+    }
   }
   return null;
 }
@@ -55,7 +56,6 @@ function authorizationCredential(req: Request): string | null {
 
 export function isDashboardAuthenticated(req: Request): boolean {
   const password = dashboardPassword();
-  if (!password) return true;
 
   const expected = sessionToken(password);
   const cookie = cookieValue(req, SESSION_COOKIE);
@@ -71,7 +71,7 @@ export async function handleAuthRoute(req: Request, url: URL): Promise<Response 
 
   if (url.pathname === "/api/auth/status" && req.method === "GET") {
     return Response.json({
-      enabled: isDashboardAuthEnabled(),
+      enabled: true,
       authenticated: isDashboardAuthenticated(req),
     });
   }
@@ -87,11 +87,12 @@ export async function handleAuthRoute(req: Request, url: URL): Promise<Response 
 
   if (url.pathname === "/api/auth/login" && req.method === "POST") {
     const password = dashboardPassword();
-    if (!password) return Response.json({ ok: true });
 
-    const submitted = await submittedPassword(req);
+    const submitted = await submittedPassword(req).catch(() => null);
     if (!submitted || !safeEqual(submitted, password)) {
-      return loginResponse(url, false);
+      const failedUrl = new URL(url);
+      failedUrl.searchParams.set("failed", "1");
+      return loginResponse(failedUrl, false);
     }
 
     const headers = new Headers({
@@ -132,7 +133,7 @@ export function unauthorizedApiResponse(): Response {
 }
 
 export function loginResponse(url: URL, authenticated = true): Response {
-  if (!isDashboardAuthEnabled() || authenticated) {
+  if (authenticated) {
     return new Response(null, { status: 303, headers: { location: "/" } });
   }
 
