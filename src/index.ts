@@ -5,6 +5,7 @@ import {
   unauthorizedApiResponse,
 } from "./auth";
 import { handleTrpc } from "./api/server";
+import { accountTerminalWebSocket, upgradeAccountTerminal } from "./account-terminal";
 import { startUsageRefresher } from "./anthropic/usage-refresher";
 import { servicePorts } from "./ports";
 import { handleProxy } from "./proxy/handler";
@@ -19,7 +20,8 @@ startUsageRefresher();
 const dashboardServer = Bun.serve({
   port: DASHBOARD_PORT,
   idleTimeout: 255,
-  async fetch(req) {
+  websocket: accountTerminalWebSocket,
+  async fetch(req, server) {
     const url = new URL(req.url);
 
     if (url.pathname === "/api/health") {
@@ -32,6 +34,10 @@ const dashboardServer = Bun.serve({
 
     const authResponse = await handleAuthRoute(req, url);
     if (authResponse) return authResponse;
+
+    if (url.pathname.startsWith("/api/accounts/") && url.pathname.endsWith("/terminal")) {
+      return upgradeAccountTerminal(req, server);
+    }
 
     if (url.pathname.startsWith("/api/trpc")) {
       if (!isDashboardAuthenticated(req)) return unauthorizedApiResponse();

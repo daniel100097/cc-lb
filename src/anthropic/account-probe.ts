@@ -83,6 +83,7 @@ class Semaphore {
 }
 
 const inFlight = new Map<string, Promise<ProbeResult>>();
+const terminalAccounts = new Set<string>();
 const lastFailureAt = new Map<string, number>();
 const lastNoopAt = new Map<string, number>();
 const livePanes = new Set<PaneSession>();
@@ -92,7 +93,23 @@ export function probeTmuxSessionName(accountId: string): string {
   return `cc-lb-probe-${accountId.replaceAll("-", "").slice(0, 24)}`;
 }
 
+/** Keep automated CLI probes from sharing credentials with an interactive CLI. */
+export function reserveAccountTerminal(accountId: string): boolean {
+  if (accountCliBusy(accountId)) return false;
+  terminalAccounts.add(accountId);
+  return true;
+}
+
+export function accountCliBusy(accountId: string): boolean {
+  return inFlight.has(accountId) || terminalAccounts.has(accountId);
+}
+
+export function releaseAccountTerminal(accountId: string): void {
+  terminalAccounts.delete(accountId);
+}
+
 export async function probeAccount(accountId: string, trigger: ProbeTrigger): Promise<ProbeResult> {
+  if (terminalAccounts.has(accountId)) throw new Error("Close the account terminal before running a usage probe.");
   const existing = inFlight.get(accountId);
   if (existing) return existing;
 

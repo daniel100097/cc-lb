@@ -80,7 +80,7 @@ services:
 
 Prerequisites:
 
-- Bun
+- Bun 1.3.5 or newer (the account terminal uses Bun's native PTY support)
 - `tmux`
 - Claude Code CLI available through this repo's dependencies
 
@@ -123,6 +123,14 @@ For each account, `.credentials.json` is the source of truth for OAuth tokens.
 cc-lb reads that file but does not write token values itself. When an account
 needs refresh, cc-lb runs `claude` against that account's config directory and
 uses `/usage` to let the CLI refresh its own credentials.
+
+Click an account name or its terminal button to open Claude Code in the dashboard.
+The interactive terminal uses that account's saved config, workspace, and egress
+proxy. Run `/login` to sign in again, open the login link, then paste the code
+back into the terminal. Closing the modal stops the terminal process; credentials
+saved by Claude remain available to cc-lb.
+If the dashboard sits behind a reverse proxy, allow WebSocket upgrades for
+`/api/accounts/*/terminal`.
 
 The Docker image includes `tmux` and the Claude Code CLI.
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { stopAccountTerminal } from "../account-terminal";
 import { beginClaudeCodeLogin, completeClaudeCodeLogin, getClaudeCodeLoginStatus } from "../anthropic/claude-code-cli";
 import {
   accountHasCredentials,
@@ -232,7 +233,7 @@ export const appRouter = router({
       };
     }),
 
-    update: publicProcedure.input(accountPatchSchema).mutation(({ input }) => {
+    update: publicProcedure.input(accountPatchSchema).mutation(async ({ input }) => {
       const patch: AccountPatch = {};
       if (input.name !== undefined) patch.name = input.name;
       if (input.priority !== undefined) patch.priority = input.priority;
@@ -244,6 +245,10 @@ export const appRouter = router({
       }
       if (input.needsReauth !== undefined) patch.needs_reauth = input.needsReauth ? 1 : 0;
       if (input.proxyUrl !== undefined) patch.proxy_url = normalizeProxyUrl(input.proxyUrl);
+
+      if (patch.proxy_url !== undefined && patch.proxy_url !== getAccount(input.id)?.proxy_url) {
+        await stopAccountTerminal(input.id);
+      }
 
       updateAccount(input.id, patch);
       const account = getAccount(input.id);
@@ -265,7 +270,8 @@ export const appRouter = router({
       return toPublicAccount(account);
     }),
 
-    delete: publicProcedure.input(z.object({ id: z.string().min(1) }).strict()).mutation(({ input }) => {
+    delete: publicProcedure.input(z.object({ id: z.string().min(1) }).strict()).mutation(async ({ input }) => {
+      await stopAccountTerminal(input.id);
       void killTmuxSession(probeTmuxSessionName(input.id)).catch(() => {});
       const blockedSessions = deleteAccount(input.id, Date.now());
       const configRemoved = deleteAccountConfigDir(input.id);

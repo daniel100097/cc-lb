@@ -37,6 +37,7 @@ import {
   Zap,
 } from "lucide-react";
 import { toast } from "sonner";
+import { AccountTerminal } from "@/components/account-terminal";
 import { AlertMessage } from "@/components/alert-message";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
@@ -1202,8 +1203,6 @@ function MiniMetric({ label, value }: { label: string; value: string }) {
 }
 
 function AccountSummaryCards({ accounts }: { accounts: Account[] }) {
-  const blurNames = usePrivacyStore((state) => state.blurNames);
-
   if (accounts.length === 0) {
     return (
       <EmptyState
@@ -1220,7 +1219,7 @@ function AccountSummaryCards({ accounts }: { accounts: Account[] }) {
         <div key={account.id} className="rounded-xl border bg-card p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className={cn("truncate font-medium", blurNames && "privacy-blur")}>{account.name}</p>
+              <AccountTerminal account={account} />
               <p className="text-muted-foreground mt-1 font-mono text-xs">{account.id.slice(0, 10)}</p>
             </div>
             <StatusBadge status={account.status} />
@@ -1863,7 +1862,7 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     <tr className="align-middle">
       <td className="px-2 py-3">
         <div className="flex items-center gap-2">
-          <span className={cn("font-medium", blurNames && "privacy-blur")}>{account.name}</span>
+          <AccountTerminal account={account} />
         </div>
         <div className="text-muted-foreground text-xs">
           {account.id.slice(0, 8)}
