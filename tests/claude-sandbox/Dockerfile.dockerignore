@@ -1,0 +1,8 @@
+**
+!package.json
+!bun.lock
+!src/
+!src/**
+!tests/
+!tests/claude-sandbox/
+!tests/claude-sandbox/**

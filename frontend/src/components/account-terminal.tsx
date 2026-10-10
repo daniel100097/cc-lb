@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Loader2, RefreshCw, TerminalSquare } from "lucide-react";
+import { Download, Loader2, RefreshCw, TerminalSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -31,7 +31,7 @@ export function AccountTerminal({ account }: { account: { id: string; name: stri
         </button>
       </DialogTrigger>
       <DialogContent
-        className="flex h-[85dvh] max-h-[calc(100dvh-2rem)] min-h-0 flex-col overflow-hidden p-4 sm:max-w-6xl sm:p-6"
+        className="flex h-[85dvh] max-h-[calc(100dvh-2rem)] min-h-0 flex-col overflow-hidden p-4 sm:max-w-[min(96vw,100rem)] sm:p-6"
         onEscapeKeyDown={(event) => event.preventDefault()}
         onInteractOutside={(event) => event.preventDefault()}
       >
@@ -68,11 +68,54 @@ function TerminalSession({ accountId }: { accountId: string }) {
   const [attempt, setAttempt] = useState(0);
   const [status, setStatus] = useState<"connecting" | "connected" | "closed">("connecting");
   const [message, setMessage] = useState("");
+  const [captureId, setCaptureId] = useState<string | null>(null);
+  const [traffic, setTraffic] = useState<TerminalTraffic | null>(null);
+  const [trafficError, setTrafficError] = useState("");
+  const [showTraffic, setShowTraffic] = useState(true);
+  const capturePath = captureId
+    ? `/api/accounts/${encodeURIComponent(accountId)}/terminal/traffic/${encodeURIComponent(captureId)}`
+    : null;
+
+  useEffect(() => {
+    if (!capturePath) return;
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout>;
+    let ended = false;
+    const poll = async () => {
+      try {
+        const response = await fetch(capturePath, { credentials: "same-origin", cache: "no-store", signal: controller.signal });
+        if (!response.ok) {
+          throw new Error(response.status === 401
+            ? "Dashboard sign-in expired. Reload to view traffic."
+            : `Could not load traffic (HTTP ${response.status}). Retrying…`);
+        }
+        const snapshot: TerminalTraffic = await response.json();
+        if (controller.signal.aborted) return;
+        setTraffic(snapshot);
+        setTrafficError("");
+        ended = Boolean(snapshot.endedAt);
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setTrafficError(error instanceof Error ? error.message : "Could not load traffic. Retrying…");
+        }
+      } finally {
+        if (!controller.signal.aborted && !ended) timeout = setTimeout(poll, 1000);
+      }
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+    };
+  }, [capturePath]);
 
   useEffect(() => {
     if (!container.current) return;
     setStatus("connecting");
     setMessage("");
+    setCaptureId(null);
+    setTraffic(null);
+    setTrafficError("");
     const terminal = new Terminal({
       cursorBlink: true,
       disableStdin: true,
@@ -91,6 +134,7 @@ function TerminalSession({ accountId }: { accountId: string }) {
 
     const path = `/api/accounts/${encodeURIComponent(accountId)}/terminal`;
     const url = new URL(path, window.location.href);
+    url.searchParams.set("record", "1");
     url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     let socket: WebSocket | undefined;
     let disposed = false;
@@ -129,6 +173,7 @@ function TerminalSession({ accountId }: { accountId: string }) {
         try {
           const data = JSON.parse(event.data);
           if (data.type === "ready" || (data.type === "output" && typeof data.data === "string")) {
+            if (data.type === "ready" && typeof data.captureId === "string") setCaptureId(data.captureId);
             terminal.options.disableStdin = false;
             setStatus("connected");
             if (data.type === "output") terminal.write(data.data);
@@ -190,8 +235,59 @@ function TerminalSession({ accountId }: { accountId: string }) {
 
   return (
     <>
-      <div className="min-h-0 flex-1 overflow-hidden rounded-md border bg-[#101214] p-2">
-        <div ref={container} className="h-full w-full" aria-label="Interactive Claude terminal" />
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 text-xs">
+        <p className="text-muted-foreground">
+          API traffic · Authorization redacted. Samples include prompts and replies.
+        </p>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" aria-expanded={showTraffic} onClick={() => setShowTraffic((current) => !current)}>
+            {showTraffic ? "Hide traffic" : "Show traffic"}{traffic ? ` (${traffic.entries.length})` : ""}
+          </Button>
+          {capturePath ? (
+            <Button asChild variant="outline" size="sm">
+              <a href={`${capturePath}/download`} download>
+                <Download className="size-3.5" aria-hidden="true" />
+                Download session
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
+        <div className="min-h-0 min-w-0 flex-[3] overflow-hidden rounded-md border bg-[#101214] p-2">
+          <div ref={container} className="h-full w-full" aria-label="Interactive Claude terminal" />
+        </div>
+        {showTraffic ? (
+          <section aria-label="Session API traffic" className="min-h-0 min-w-0 flex-[2] overflow-auto rounded-md border p-3 text-xs">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-semibold">Session API traffic</h3>
+              <span className="text-muted-foreground">{traffic?.endedAt ? "Recording ended" : captureId ? "Recording" : "Waiting for terminal…"}</span>
+            </div>
+            <p className="text-muted-foreground mb-3">API requests and replies appear here as you use Claude. OAuth login traffic is not recorded.</p>
+            {trafficError ? <p role="alert" className="text-destructive mb-3">{trafficError}</p> : null}
+            {traffic?.truncated ? <p role="status" className="mb-3">Capture limit reached. Some traffic is truncated or omitted.</p> : null}
+            {captureId && !traffic && !trafficError ? <p role="status" className="text-muted-foreground">Loading traffic…</p> : null}
+            {traffic && traffic.entries.length === 0 ? <p className="text-muted-foreground">No API requests captured yet. Send a prompt in the terminal.</p> : null}
+            <div className="space-y-2">
+              {traffic?.entries.map((entry) => (
+                <details key={entry.id} className="rounded-md border">
+                  <summary className="cursor-pointer break-all px-3 py-2 font-mono focus-visible:outline-2 focus-visible:outline-offset-2">
+                    {entry.responseStatus ?? "Pending"} {entry.method} {entry.url}
+                    {!entry.complete && entry.responseStatus !== null ? " · Streaming / in progress" : ""}
+                    {entry.truncated ? " · Truncated" : ""}
+                  </summary>
+                  <div className="space-y-3 border-t p-3">
+                    <p className="text-muted-foreground"><time dateTime={entry.timestamp}>{entry.timestamp}</time></p>
+                    <TrafficBody title="Request headers" body={JSON.stringify(entry.requestHeaders, null, 2)} />
+                    <TrafficBody title="Request body" body={entry.requestBody} />
+                    <TrafficBody title="Response headers" body={JSON.stringify(entry.responseHeaders, null, 2)} />
+                    <TrafficBody title="Response body" body={entry.responseBody} />
+                  </div>
+                </details>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </div>
       <div className="flex shrink-0 items-center justify-between gap-3 text-xs">
         <p role="status" className="text-muted-foreground flex items-center gap-2">
@@ -206,5 +302,38 @@ function TerminalSession({ accountId }: { accountId: string }) {
         ) : null}
       </div>
     </>
+  );
+}
+
+type TerminalTraffic = {
+  endedAt: string | null;
+  truncated: boolean;
+  entries: {
+    id: string;
+    timestamp: string;
+    method: string;
+    url: string;
+    requestHeaders: Record<string, string>;
+    requestBody: string;
+    responseStatus: number | null;
+    responseHeaders: Record<string, string>;
+    responseBody: string;
+    complete: boolean;
+    truncated: boolean;
+  }[];
+};
+
+function TrafficBody({ title, body }: { title: string; body: string }) {
+  let formatted = body;
+  try {
+    formatted = JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    // Keep text and server-sent events exactly as captured.
+  }
+  return (
+    <div>
+      <h4 className="text-muted-foreground mb-1 font-medium">{title}</h4>
+      <pre className="bg-muted max-h-72 overflow-auto whitespace-pre-wrap break-all rounded p-2 font-mono text-[11px]">{formatted || "(empty)"}</pre>
+    </div>
   );
 }

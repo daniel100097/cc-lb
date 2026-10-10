@@ -112,6 +112,14 @@ With the default development configuration, the dashboard is available at
 The React dashboard lives in `frontend/` and builds directly into `public/` with
 Bun and Tailwind CLI. There is no Vite project.
 
+## Offline Claude Code Tests
+
+Run `bun run test:claude` to exercise the bundled Claude Code CLI against a
+fake API in a container with external networking disabled. The suite captures
+traffic and tests scripted answers, tool calls, OAuth refresh, and errors,
+directly and through cc-lb. See [the sandbox guide](docs/claude-sandbox.md) for
+commands, artifacts, and limitations. Requires Docker; no real account is needed.
+
 ## Accounts
 
 Accounts are added through Claude Code CLI login. The dashboard starts `claude`
@@ -134,6 +142,11 @@ back into the terminal. Closing the modal stops the terminal process; credential
 saved by Claude remain available to cc-lb.
 If the dashboard sits behind a reverse proxy, allow WebSocket upgrades for
 `/api/accounts/*/terminal`.
+
+The terminal shows live API requests and replies beside Claude. **Download
+session** saves a credential-redacted JSONL sample for the
+[replay and comparison suite](docs/claude-sandbox.md). OAuth login traffic on
+separate hosts is outside this capture.
 
 The Docker image includes `tmux` and the Claude Code CLI.
 

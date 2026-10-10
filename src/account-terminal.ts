@@ -10,12 +10,15 @@ import {
 import { accountCliBusy, releaseAccountTerminal, reserveAccountTerminal } from "./anthropic/account-probe";
 import { buildClaudeCliEnv } from "./anthropic/tmux-driver";
 import { getAccount, updateAccount } from "./db/accounts";
+import { startTerminalTraffic, type TerminalTrafficRecorder } from "./terminal-traffic";
 
 export interface AccountTerminal {
   accountId: string;
   proxyUrl: string | null;
   credentials: FileCredentials | null;
   request: Request;
+  recordTraffic?: boolean;
+  traffic?: TerminalTrafficRecorder;
   socket?: ServerWebSocket<AccountTerminal>;
   process?: Subprocess;
   checkTimer?: Timer;
@@ -62,6 +65,7 @@ export function upgradeAccountTerminal(req: Request, server: Server<AccountTermi
     proxyUrl: account.proxy_url,
     credentials: readCredentialsFile(account.id),
     request: req,
+    recordTraffic: url.searchParams.get("record") === "1",
   };
   terminals.set(account.id, session);
   session.checkTimer = setTimeout(() => {
@@ -90,6 +94,16 @@ export const accountTerminalWebSocket: WebSocketHandler<AccountTerminal> = {
         && !/^(https?|all|no)_proxy$/i.test(key),
       ));
       const env = buildClaudeCliEnv(baseEnv, accountConfigDir(session.accountId), session.proxyUrl);
+      if (session.recordTraffic) {
+        session.traffic = startTerminalTraffic({
+          accountId: session.accountId, proxyUrl: session.proxyUrl,
+          secrets: [session.credentials?.accessToken, session.credentials?.refreshToken].filter((value): value is string => Boolean(value)),
+        });
+        env.ANTHROPIC_BASE_URL = session.traffic.url;
+        // OAuth keeps the account's egress proxy; local API recording must not leave through it.
+        env.NO_PROXY = "127.0.0.1,localhost";
+        env.no_proxy = env.NO_PROXY;
+      }
       const command = env.CLAUDE_CODE_LOGIN_COMMAND;
       if (!command) throw new Error("Claude command is missing");
       const decoder = new TextDecoder();
@@ -107,13 +121,16 @@ export const accountTerminalWebSocket: WebSocketHandler<AccountTerminal> = {
         },
       });
       session.process = child;
-      session.finished = child.exited.then((code) => {
+      session.finished = child.exited.then(async (code) => {
         const tail = decoder.decode();
         if (tail) send(session, { type: "output", data: tail });
         syncCredentials(session);
         // Bun's PTY child is a session/process-group leader. Reap any shell children too.
         signalGroup(child, "SIGKILL");
         child.terminal?.close();
+        await session.traffic?.stop().catch(() => {
+          send(session, { type: "error", message: "Could not finish saving the traffic capture." });
+        });
         release(session);
         send(session, { type: "exit", code });
         socket.close(1000, "Claude exited");
@@ -127,7 +144,7 @@ export const accountTerminalWebSocket: WebSocketHandler<AccountTerminal> = {
         }
         syncCredentials(session);
       }, 1000);
-      send(session, { type: "ready" });
+      send(session, { type: "ready", ...(session.traffic ? { captureId: session.traffic.id } : {}) });
     } catch {
       send(session, { type: "error", message: "Could not start Claude Code. Check the server's Claude installation." });
       release(session);
@@ -191,6 +208,7 @@ function signalGroup(child: Subprocess, signal: NodeJS.Signals): void {
 function release(session: AccountTerminal): void {
   clearInterval(session.checkTimer);
   clearTimeout(session.killTimer);
+  void session.traffic?.stop().catch(() => {});
   if (terminals.get(session.accountId) === session) {
     terminals.delete(session.accountId);
     releaseAccountTerminal(session.accountId);
@@ -205,6 +223,7 @@ export async function stopAccountTerminal(accountId: string): Promise<void> {
   session.socket?.close(1000, "Terminal closed");
   const child = session.process;
   if (!child) {
+    await session.traffic?.stop().catch(() => {});
     release(session);
     return;
   }

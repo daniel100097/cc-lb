@@ -9,6 +9,7 @@ import { accountTerminalWebSocket, upgradeAccountTerminal } from "./account-term
 import { startUsageRefresher } from "./anthropic/usage-refresher";
 import { servicePorts } from "./ports";
 import { handleProxy } from "./proxy/handler";
+import { handleTerminalTraffic } from "./terminal-traffic";
 
 const { dashboard: DASHBOARD_PORT, proxy: PROXY_PORT } = servicePorts();
 
@@ -38,6 +39,9 @@ const dashboardServer = Bun.serve({
     if (url.pathname.startsWith("/api/accounts/") && url.pathname.endsWith("/terminal")) {
       return upgradeAccountTerminal(req, server);
     }
+
+    const trafficResponse = handleTerminalTraffic(req);
+    if (trafficResponse) return trafficResponse;
 
     if (url.pathname.startsWith("/api/trpc")) {
       if (!isDashboardAuthenticated(req)) return unauthorizedApiResponse();

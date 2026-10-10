@@ -12,13 +12,14 @@ const { seedAccountCredentials } = await import("./testing/seed-credentials");
 const { accountConfigDir, accountWorkspaceDir } = await import("./anthropic/account-config");
 const { probeAccount } = await import("./anthropic/account-probe");
 const { accountTerminalWebSocket, upgradeAccountTerminal, stopAccountTerminal } = await import("./account-terminal");
+const { handleTerminalTraffic } = await import("./terminal-traffic");
 const { appRouter } = await import("./api/router");
 
 const server = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
   websocket: accountTerminalWebSocket,
-  fetch: upgradeAccountTerminal,
+  fetch: (req, server) => handleTerminalTraffic(req) ?? upgradeAccountTerminal(req, server),
 });
 const origin = `http://127.0.0.1:${server.port}`;
 const accounts: string[] = [];
@@ -27,6 +28,7 @@ const sockets: WebSocket[] = [];
 beforeEach(() => {
   process.env.CLAUDE_ACCOUNTS_DIR = join(tempDir, "accounts");
   process.env.DASHBOARD_PASSWORD = "terminal-test-password";
+  process.env.TERMINAL_TRAFFIC_DIR = join(tempDir, "traffic");
 });
 
 afterEach(async () => {
@@ -51,13 +53,13 @@ function headers(extra: Record<string, string> = {}) {
   return { authorization: "Bearer terminal-test-password", origin, ...extra };
 }
 
-async function connect(id: string) {
+async function connect(id: string, record = false) {
   // Reflect preserves Bun's header options when lib.dom supplies the global constructor type.
   const socket: WebSocket = Reflect.construct(WebSocket, [
-    `${origin.replace("http:", "ws:")}/api/accounts/${id}/terminal`, { headers: headers() },
+    `${origin.replace("http:", "ws:")}/api/accounts/${id}/terminal${record ? "?record=1" : ""}`, { headers: headers() },
   ]);
   sockets.push(socket);
-  const messages: Array<{ type: string; data?: string; code?: number }> = [];
+  const messages: Array<{ type: string; data?: string; code?: number; captureId?: string }> = [];
   socket.addEventListener("message", (event) => messages.push(JSON.parse(String(event.data))));
   await until(() => messages.some((message) => message.type === "ready"));
   return { socket, messages, output: () => messages.map((message) => message.data ?? "").join("") };
@@ -127,6 +129,28 @@ describe("account terminal", () => {
     await until(() => terminal.messages.some((message) => message.type === "exit"));
     expect(terminal.messages.find((message) => message.type === "exit")?.code).toBe(7);
     expect(getAccount(a.id)?.needs_reauth).toBe(0);
+  });
+
+  test("recording starts a private API listener, bypasses egress only for loopback, and remains downloadable after exit", async () => {
+    const a = account("http://127.0.0.1:7777/");
+    process.env.CLAUDE_CODE_LOGIN_COMMAND = `stty -echo; printf 'BASE=%s\\nPROXY=%s\\nBYPASS=%s|%s\\nAUTH=%s%s\\n' "$ANTHROPIC_BASE_URL" "$HTTPS_PROXY" "$NO_PROXY" "$no_proxy" "$ANTHROPIC_AUTH_TOKEN" "$ANTHROPIC_API_KEY"; read line`;
+    const terminal = await connect(a.id, true);
+    await until(() => terminal.output().includes("BYPASS="));
+    expect(terminal.output()).toMatch(/BASE=http:\/\/127\.0\.0\.1:\d+/);
+    expect(terminal.output()).toContain("PROXY=http://127.0.0.1:7777/");
+    expect(terminal.output()).toContain("BYPASS=127.0.0.1,localhost|127.0.0.1,localhost");
+    expect(terminal.output()).toContain("AUTH=\r\n");
+    const captureId = terminal.messages.find(message => message.type === "ready")?.captureId;
+    expect(captureId).toMatch(/^[a-f0-9-]{36}$/);
+    const endpoint = `${origin}/api/accounts/${a.id}/terminal/traffic/${captureId}`;
+    expect((await fetch(endpoint)).status).toBe(401);
+    const snapshot = await (await fetch(endpoint, { headers: headers() })).json();
+    expect(snapshot.accountId).toBe(a.id);
+    expect(snapshot.endedAt).toBeNull();
+    await stopAccountTerminal(a.id);
+    const ended = await (await fetch(endpoint, { headers: headers() })).json();
+    expect(ended.endedAt).not.toBeNull();
+    expect((await fetch(`${endpoint}/download`, { headers: headers() })).status).toBe(200);
   });
 
   test("invalid input ends the process and releases the account for a new terminal", async () => {
