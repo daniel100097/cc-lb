@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { expect, test, type WebSocketRoute } from "@playwright/test";
 import { parseReplay } from "../claude-sandbox/experiments";
 
-test("records terminal traffic live and downloads a replayable session after exit", async ({ page, context }) => {
+test("records terminal traffic only after opting in, and downloads a replayable session after exit", async ({ page, context }) => {
   const login = await context.request.post("/api/auth/login", {
     data: { password: process.env.E2E_DASHBOARD_PASSWORD || "cc-lb-e2e-password" },
   });
@@ -24,9 +24,16 @@ test("records terminal traffic live and downloads a replayable session after exi
   };
   let terminalSocket: WebSocketRoute | undefined;
   let connections = 0;
+  let plainConnections = 0;
   const inputs: string[] = [];
   let complete = false;
   let endedAt: string | null = null;
+  // Terminals start unrecorded; only the switch adds record=1.
+  await page.routeWebSocket(/\/api\/accounts\/[^/]+\/terminal$/, (socket) => {
+    plainConnections++;
+    socket.send(JSON.stringify({ type: "ready" }));
+    socket.send(JSON.stringify({ type: "output", data: "Claude terminal ready.\r\n" }));
+  });
   await page.routeWebSocket(/\/api\/accounts\/[^/]+\/terminal\?record=1$/, (socket) => {
     terminalSocket = socket;
     connections++;
@@ -57,6 +64,15 @@ test("records terminal traffic live and downloads a replayable session after exi
   const panel = dialog.getByRole("region", { name: "Session API traffic" });
   const terminal = dialog.getByLabel("Interactive Claude terminal", { exact: true });
   const request = panel.locator("summary");
+  const recordSwitch = dialog.getByRole("switch", { name: "Record API traffic" });
+  await expect(terminal).toContainText("Claude terminal ready.");
+  await expect(recordSwitch).not.toBeChecked();
+  await expect(panel).toHaveCount(0);
+  expect(plainConnections).toBe(1);
+  expect(connections).toBe(0);
+
+  await recordSwitch.click();
+  await expect(recordSwitch).toBeChecked();
   await expect(request).toContainText("Pending POST https://api.anthropic.com/v1/messages");
   await request.click();
   await expect(panel).toContainText("Capture this prompt.");

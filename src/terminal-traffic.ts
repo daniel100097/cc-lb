@@ -247,6 +247,8 @@ export function startTerminalTraffic(options: RecorderOptions): TerminalTrafficR
         const response = await fetchUpstream(target, {
           method: request.method, headers: forwardHeaders(request.headers), body,
           redirect: "manual", signal: AbortSignal.any([request.signal, abort.signal]),
+          // Bun pools connections process-wide; reuse would carry several accounts over one upstream socket.
+          keepalive: false,
           ...proxyFetchInit(options.proxyUrl),
         });
         const headers = forwardHeaders(response.headers, true);

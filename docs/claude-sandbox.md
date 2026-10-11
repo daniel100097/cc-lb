@@ -38,10 +38,14 @@ prompts, replies, and file contents remain in the download. Capture limits are
 entries marked incomplete or truncated. Dashboard capture uses the normal
 account terminal; Docker isolation applies to the test runs described below.
 
-Dashboard capture routes the terminal's `ANTHROPIC_BASE_URL` through a local
-recorder. Optional Claude Code features selected by first-party hostname
-checks can therefore differ from a terminal using the standard API URL.
-The Docker sandbox preserves the standard hostnames instead.
+Dashboard capture is off by default. Turn on **Record API traffic** in the
+account terminal to enable it; switching it restarts Claude, and the choice is
+not remembered. While on, the terminal's `ANTHROPIC_BASE_URL` points at a local
+recorder, so Claude Code treats the session as using a custom API URL: optional
+features selected by first-party hostname checks can differ, and its telemetry
+reports the custom base URL. The recorder opens a fresh upstream connection per
+request so recorded accounts never share one. The Docker sandbox preserves the
+standard hostnames instead.
 
 Captures persist under `data/terminal-traffic/` by default, next to the configured
 database when `DB_PATH` changes its directory. Set `TERMINAL_TRAFFIC_DIR` to

@@ -5,6 +5,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Download, Loader2, RefreshCw, TerminalSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -72,6 +74,10 @@ function TerminalSession({ accountId }: { accountId: string }) {
   const [traffic, setTraffic] = useState<TerminalTraffic | null>(null);
   const [trafficError, setTrafficError] = useState("");
   const [showTraffic, setShowTraffic] = useState(true);
+  // Recording points Claude Code at a local API URL, which changes its traffic,
+  // so it is opt-in per terminal and never remembered.
+  const [record, setRecord] = useState(false);
+  const restarting = useRef(false);
   const capturePath = captureId
     ? `/api/accounts/${encodeURIComponent(accountId)}/terminal/traffic/${encodeURIComponent(captureId)}`
     : null;
@@ -134,7 +140,7 @@ function TerminalSession({ accountId }: { accountId: string }) {
 
     const path = `/api/accounts/${encodeURIComponent(accountId)}/terminal`;
     const url = new URL(path, window.location.href);
-    url.searchParams.set("record", "1");
+    if (record) url.searchParams.set("record", "1");
     url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     let socket: WebSocket | undefined;
     let disposed = false;
@@ -158,7 +164,13 @@ function TerminalSession({ accountId }: { accountId: string }) {
     observer.observe(container.current);
 
     // Defer connection until mounted: React StrictMode immediately disposes its first effect.
-    const connectFrame = requestAnimationFrame(() => {
+    const connectFrame = requestAnimationFrame(async () => {
+      if (restarting.current) {
+        restarting.current = false;
+        // Switching recording restarts Claude; wait until the old process releases the account.
+        await waitForTerminalRelease(path, diagnostic.signal);
+        if (disposed) return;
+      }
       terminal.focus();
       const connection = new WebSocket(url);
       socket = connection;
@@ -231,33 +243,46 @@ function TerminalSession({ accountId }: { accountId: string }) {
       }
       terminal.dispose();
     };
-  }, [accountId, attempt]);
+  }, [accountId, attempt, record]);
+
+  function changeRecording(next: boolean) {
+    restarting.current = true;
+    setRecord(next);
+  }
 
   return (
     <>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 text-xs">
-        <p className="text-muted-foreground">
-          API traffic · Authorization redacted. Samples include prompts and replies.
-        </p>
-        <div className="flex items-center gap-2">
-          <Button type="button" variant="outline" size="sm" aria-expanded={showTraffic} onClick={() => setShowTraffic((current) => !current)}>
-            {showTraffic ? "Hide traffic" : "Show traffic"}{traffic ? ` (${traffic.entries.length})` : ""}
-          </Button>
-          {capturePath ? (
-            <Button asChild variant="outline" size="sm">
-              <a href={`${capturePath}/download`} download>
-                <Download className="size-3.5" aria-hidden="true" />
-                Download session
-              </a>
-            </Button>
-          ) : null}
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <Switch id={`record-traffic-${accountId}`} size="sm" checked={record} onCheckedChange={changeRecording} />
+          <Label htmlFor={`record-traffic-${accountId}`} className="text-xs">Record API traffic</Label>
+          <span className="text-muted-foreground">
+            {record
+              ? "Claude Code sees a custom API URL, so its traffic differs from a normal session. Prompts and replies are saved; Authorization is redacted."
+              : "Off: Claude talks to Anthropic directly. Turning it on restarts the terminal."}
+          </span>
         </div>
+        {record ? (
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="outline" size="sm" aria-expanded={showTraffic} onClick={() => setShowTraffic((current) => !current)}>
+              {showTraffic ? "Hide traffic" : "Show traffic"}{traffic ? ` (${traffic.entries.length})` : ""}
+            </Button>
+            {capturePath ? (
+              <Button asChild variant="outline" size="sm">
+                <a href={`${capturePath}/download`} download>
+                  <Download className="size-3.5" aria-hidden="true" />
+                  Download session
+                </a>
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
         <div className="min-h-0 min-w-0 flex-[3] overflow-hidden rounded-md border bg-[#101214] p-2">
           <div ref={container} className="h-full w-full" aria-label="Interactive Claude terminal" />
         </div>
-        {showTraffic ? (
+        {record && showTraffic ? (
           <section aria-label="Session API traffic" className="min-h-0 min-w-0 flex-[2] overflow-auto rounded-md border p-3 text-xs">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h3 className="font-semibold">Session API traffic</h3>
@@ -303,6 +328,19 @@ function TerminalSession({ accountId }: { accountId: string }) {
       </div>
     </>
   );
+}
+
+/** The read-only terminal GET answers 409 while a previous terminal or usage probe still holds the account. */
+async function waitForTerminalRelease(path: string, signal: AbortSignal) {
+  for (let tries = 0; tries < 20 && !signal.aborted; tries++) {
+    try {
+      const response = await fetch(path, { credentials: "same-origin", cache: "no-store", signal });
+      if (response.status !== 409) return;
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 }
 
 type TerminalTraffic = {

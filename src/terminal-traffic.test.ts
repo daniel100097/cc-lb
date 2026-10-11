@@ -74,6 +74,28 @@ describe("terminal traffic recorder", () => {
     expect(recorder.snapshot().entries[0]?.responseBody).toBe("data: first\n\ndata: last\n\n");
   });
 
+  test("never reuses an upstream connection, so recorded accounts cannot share one", async () => {
+    const seen: { auth: string | null; port: number | undefined }[] = [];
+    const upstream = Bun.serve({
+      port: 0, hostname: "127.0.0.1",
+      async fetch(req, server) {
+        // Read the body like the real API; an unread body makes Bun close the socket and hide reuse.
+        await req.text();
+        seen.push({ auth: req.headers.get("authorization"), port: server.requestIP(req)?.port });
+        return Response.json({});
+      },
+    });
+    servers.push(upstream);
+    const apiBase = `http://127.0.0.1:${upstream.port}`;
+    const first = record({ accountId: "pool-a", apiBase });
+    const second = record({ accountId: "pool-b", apiBase });
+    for (const [recorder, auth] of [[first, "Bearer a"], [second, "Bearer b"], [first, "Bearer a"]] as const) {
+      await (await fetch(`${recorder.url}/v1/messages`, { method: "POST", headers: { authorization: auth }, body: "{}" })).text();
+    }
+    expect(seen.map(entry => entry.auth)).toEqual(["Bearer a", "Bearer b", "Bearer a"]);
+    expect(new Set(seen.map(entry => entry.port)).size).toBe(3);
+  });
+
   test("honors the account proxy, strips transport headers, and redacts credentials on disk and in snapshots", async () => {
     let sent: BunFetchRequestInit | undefined;
     const fakeFetch: typeof globalThis.fetch = Object.assign(async (_url: RequestInfo | URL, init?: BunFetchRequestInit) => {
