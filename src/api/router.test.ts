@@ -119,6 +119,20 @@ describe("appRouter accounts", () => {
     expect(resumed.pauseReason).toBeNull();
   });
 
+  test("update toggles draining and priority without changing status", async () => {
+    const account = createAccount({ name: "Drain me" });
+    seedAccountCredentials(account.id, { accessToken: "access-d", refreshToken: "refresh-d" });
+
+    const draining = await caller.accounts.update({ id: account.id, draining: true, priority: 7 });
+    expect(draining.draining).toBe(true);
+    expect(draining.priority).toBe(7);
+    expect(draining.status).toBe("active");
+
+    const open = await caller.accounts.update({ id: account.id, draining: false });
+    expect(open.draining).toBe(false);
+    expect(open.priority).toBe(7);
+  });
+
   test("update validates, masks, and clears the account egress proxy", async () => {
     const account = createAccount({ name: "Proxy me" });
     seedAccountCredentials(account.id, { accessToken: "access-p", refreshToken: "refresh-p" });

@@ -22,6 +22,8 @@ export const accounts = sqliteTable("accounts", {
   needsReauth: integer("needs_reauth").notNull().default(0),
   paused: integer("paused").notNull().default(0),
   pauseReason: text("pause_reason"),
+  /** Draining accounts take no new chat sessions but keep serving chats already pinned to them. */
+  draining: integer("draining").notNull().default(0),
   usageWindows: text("usage_windows"),
   usageCheckedAt: integer("usage_checked_at"),
   /** Outbound HTTP proxy for this account's traffic; null means direct. */

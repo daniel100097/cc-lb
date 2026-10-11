@@ -27,6 +27,7 @@ export interface Account {
   needs_reauth: number;
   paused: number;
   pause_reason: string | null;
+  draining: number;
   usage_windows: string | null;
   usage_checked_at: number | null;
   proxy_url: string | null;
@@ -102,6 +103,7 @@ export function updateAccount(id: string, patch: AccountPatch): void {
   add("needsReauth", patch.needs_reauth);
   add("paused", patch.paused);
   add("pauseReason", patch.pause_reason);
+  add("draining", patch.draining);
   add("usageWindows", patch.usage_windows);
   add("usageCheckedAt", patch.usage_checked_at);
   add("proxyUrl", patch.proxy_url);
@@ -159,6 +161,7 @@ interface AccountUpdateValues {
   needsReauth?: number;
   paused?: number;
   pauseReason?: string | null;
+  draining?: number;
   usageWindows?: string | null;
   usageCheckedAt?: number | null;
   proxyUrl?: string | null;
@@ -187,6 +190,7 @@ function toAccount(row: AccountRow): Account {
     needs_reauth: row.needsReauth,
     paused: row.paused,
     pause_reason: row.pauseReason,
+    draining: row.draining,
     usage_windows: row.usageWindows,
     usage_checked_at: row.usageCheckedAt,
     proxy_url: row.proxyUrl,

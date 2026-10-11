@@ -12,6 +12,8 @@ import {
   Clock3,
   Coins,
   Code2,
+  DoorClosed,
+  DoorOpen,
   Eye,
   EyeOff,
   Gauge,
@@ -498,7 +500,7 @@ function AccountsPage() {
 
   return (
     <div className="animate-fade-in-up flex flex-col gap-6">
-      <PageHeading title="Accounts" description="Manage Claude OAuth accounts, priorities, pause state, and reauth flags." action={<AddAccountDialog />} />
+      <PageHeading title="Accounts" description="Manage Claude OAuth accounts, priorities, pause/drain state, and reauth flags." action={<AddAccountDialog />} />
       <section className="rounded-xl border bg-card p-4">
         <AccountsTable accounts={accounts.data ?? []} />
       </section>
@@ -1222,7 +1224,10 @@ function AccountSummaryCards({ accounts }: { accounts: Account[] }) {
               <AccountTerminal account={account} />
               <p className="text-muted-foreground mt-1 font-mono text-xs">{account.id.slice(0, 10)}</p>
             </div>
-            <StatusBadge status={account.status} />
+            <div className="flex flex-col items-end gap-1">
+              <StatusBadge status={account.status} />
+              {account.draining ? <StatusBadge status="draining" /> : null}
+            </div>
           </div>
           <div className="mt-4 grid gap-3">
             <div className="grid grid-cols-2 gap-4">
@@ -1842,6 +1847,11 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     toast.success(account.paused ? "Account resumed" : "Account paused");
   }
 
+  async function toggleDraining() {
+    await updateAccount.mutateAsync({ id: account.id, draining: !account.draining });
+    toast.success(account.draining ? "Account accepts new sessions again" : "Account draining: no new sessions");
+  }
+
   async function rename() {
     const nextName = window.prompt("Account name", account.name);
     if (!nextName) return;
@@ -1874,9 +1884,14 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
         </div>
       </td>
       <td className="px-2 py-3">
-        <StatusBadge status={account.status} />
+        <div className="flex flex-wrap gap-1">
+          <StatusBadge status={account.status} />
+          {account.draining ? <StatusBadge status="draining" /> : null}
+        </div>
       </td>
-      <td className="px-2 py-3">{account.priority}</td>
+      <td className="px-2 py-3">
+        <PriorityInput account={account} />
+      </td>
       <td className="px-2 py-3">{compactNumber(account.requestCount)}</td>
       <td className="px-2 py-3">
         <MiniQuotaBar percentRemaining={quotaRemainingPercent(account)} />
@@ -1900,6 +1915,15 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
         <div className="flex justify-end gap-1">
           <Button type="button" variant="ghost" size="icon" onClick={togglePause} title={account.paused ? "Resume" : "Pause"}>
             {account.paused ? <RotateCcw className="size-4" /> : <Pause className="size-4" />}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={toggleDraining}
+            title={account.draining ? "Accept new sessions" : "Drain: stop new sessions, keep existing ones"}
+          >
+            {account.draining ? <DoorOpen className="size-4 text-primary" /> : <DoorClosed className="size-4" />}
           </Button>
           <Button type="button" variant="ghost" size="icon" onClick={rename} title="Rename">
             <MoreHorizontal className="size-4" />
@@ -1933,6 +1957,55 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
         <AccountProxyDialog account={account} open={proxyOpen} onOpenChange={setProxyOpen} />
       </td>
     </tr>
+  );
+}
+
+/** Inline priority editor; commits on blur or Enter. Lower numbers are picked first. */
+function PriorityInput({ account }: { account: Account }) {
+  const [value, setValue] = useState(String(account.priority));
+  const utils = trpc.useUtils();
+  const updateAccount = trpc.accounts.update.useMutation({
+    onSuccess: async () => {
+      await utils.accounts.list.invalidate();
+      toast.success("Priority updated");
+    },
+    onError: (error) => {
+      setValue(String(account.priority));
+      toast.error(error.message || "Failed to update priority");
+    },
+  });
+
+  useEffect(() => {
+    setValue(String(account.priority));
+  }, [account.priority]);
+
+  function commit() {
+    const next = Number(value);
+    if (value.trim() === "" || !Number.isInteger(next) || next < 0 || next > 10_000) {
+      setValue(String(account.priority));
+      toast.error("Priority must be a whole number from 0 to 10000");
+      return;
+    }
+    if (next !== account.priority) updateAccount.mutate({ id: account.id, priority: next });
+  }
+
+  return (
+    <Input
+      type="number"
+      min={0}
+      max={10_000}
+      step={1}
+      value={value}
+      disabled={updateAccount.isPending}
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+      className="h-8 w-20 tabular-nums"
+      aria-label={`Priority for ${account.name}`}
+      title="Lower numbers get new sessions first"
+    />
   );
 }
 

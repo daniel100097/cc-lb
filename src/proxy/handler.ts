@@ -564,10 +564,11 @@ function orderAccounts(
 
   // Then strategy order over the remaining available pool. For sticky-keyed
   // requests any of these accounts can become the session's new home, so
-  // accounts at/above the usage cutoff (5h session or weekly window) go last —
-  // used only when no fresher account exists. The pinned account above is
-  // exempt: an existing session keeps its home even past the cutoff.
-  const pool = available;
+  // draining accounts are excluded outright and accounts at/above the usage
+  // cutoff (5h session or weekly window) go last — used only when no fresher
+  // account exists. The pinned account above is exempt from both: an existing
+  // session keeps its home even while it drains or sits past the cutoff.
+  const pool = available.filter((s) => byId.get(s.id)?.draining !== 1);
   const saturated = new Set<string>();
   if (stickyKey) {
     for (const s of pool) {
@@ -1489,7 +1490,13 @@ function poolExhausted(accounts: Account[], now: number): Response {
   const details = accounts.map((a) => ({
     id: a.id,
     name: a.name,
-    reason: a.paused ? "paused" : a.needs_reauth === 1 ? "needs_reauth" : "rate_limited",
+    reason: a.paused
+      ? "paused"
+      : a.needs_reauth === 1
+        ? "needs_reauth"
+        : a.draining === 1 && !(a.rate_limited_until !== null && a.rate_limited_until > now)
+          ? "draining"
+          : "rate_limited",
     available_at: a.rate_limited_until ?? null,
   }));
   const soonest = accounts

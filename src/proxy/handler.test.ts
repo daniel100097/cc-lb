@@ -1096,6 +1096,96 @@ describe("handleProxy", () => {
     }
   });
 
+  test("draining accounts take no new chats but keep serving chats already pinned to them", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const draining = createAccount({ name: "Draining home", priority: 0 });
+    seedAccountCredentials(draining.id, {
+      accessToken: "draining-home-access",
+      refreshToken: "draining-home-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const open = createAccount({ name: "Draining open", priority: 1 });
+    seedAccountCredentials(open.id, {
+      accessToken: "draining-open-access",
+      refreshToken: "draining-open-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    claimSticky("sid:session-draining-old", draining.id, now);
+    updateAccount(draining.id, { draining: 1 });
+
+    const { restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+
+    try {
+      const fresh = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-claude-code-session-id": "session-draining-new" },
+          body: JSON.stringify({ model: "claude-draining-new", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(fresh.status).toBe(200);
+      await fresh.text();
+      expect(getSticky("sid:session-draining-new")).toEqual({ accountId: open.id, status: "active" });
+
+      const existing = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-claude-code-session-id": "session-draining-old" },
+          body: JSON.stringify({ model: "claude-draining-old", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(existing.status).toBe(200);
+      await existing.text();
+      const logs = listRequests({ limit: 10, offset: 0, search: "claude-draining-old" });
+      expect(logs.entries[0]?.account_id).toBe(draining.id);
+    } finally {
+      restore();
+    }
+  });
+
+  test("new chats are refused when every available account is draining", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const only = createAccount({ name: "Draining only", priority: 0 });
+    seedAccountCredentials(only.id, {
+      accessToken: "draining-only-access",
+      refreshToken: "draining-only-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    updateAccount(only.id, { draining: 1 });
+
+    let call = 0;
+    const { restore } = captureFetch(() => {
+      call += 1;
+      return Response.json({ usage: { input_tokens: 1, output_tokens: 2 } });
+    });
+
+    try {
+      const response = await handleProxy(
+        new Request("http://cc-lb.test/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-claude-code-session-id": "session-draining-none" },
+          body: JSON.stringify({ model: "claude-draining-none", messages: [] }),
+        }),
+        new URL("http://cc-lb.test/v1/messages"),
+      );
+      expect(response.status).toBe(503);
+      const body = await response.json();
+      expect(body.accounts.find((entry: { id: string }) => entry.id === only.id)?.reason).toBe("draining");
+      expect(call).toBe(0);
+      expect(getSticky("sid:session-draining-none")).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
   test("count_tokens and messages share one permanent Claude Code session home", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {

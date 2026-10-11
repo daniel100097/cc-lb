@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 const statusClassMap = new Map([
   ["active", "bg-emerald-500/15 text-emerald-700 border-emerald-500/20 dark:text-emerald-400"],
   ["paused", "bg-amber-500/15 text-amber-700 border-amber-500/20 dark:text-amber-400"],
+  ["draining", "bg-violet-500/15 text-violet-700 border-violet-500/20 dark:text-violet-300"],
   ["rate_limited", "bg-orange-500/15 text-orange-700 border-orange-500/20 dark:text-orange-400"],
   ["needs_reauth", "bg-sky-500/15 text-sky-700 border-sky-500/20 dark:text-sky-300"],
   ["expired", "bg-zinc-500/15 text-zinc-600 border-zinc-500/20 dark:text-zinc-400"],
@@ -18,6 +19,7 @@ const statusClassMap = new Map([
 const labelMap = new Map([
   ["active", "Active"],
   ["paused", "Paused"],
+  ["draining", "Draining"],
   ["rate_limited", "Rate limited"],
   ["needs_reauth", "Needs reauth"],
   ["expired", "Expired"],
