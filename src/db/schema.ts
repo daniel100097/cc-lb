@@ -24,6 +24,8 @@ export const accounts = sqliteTable("accounts", {
   pauseReason: text("pause_reason"),
   /** Draining accounts take no new chat sessions but keep serving chats already pinned to them. */
   draining: integer("draining").notNull().default(0),
+  /** Fast-mode requests are downgraded to standard speed before reaching this account. */
+  fastModeDisabled: integer("fast_mode_disabled").notNull().default(0),
   usageWindows: text("usage_windows"),
   usageCheckedAt: integer("usage_checked_at"),
   /** Outbound HTTP proxy for this account's traffic; null means direct. */

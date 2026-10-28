@@ -1148,6 +1148,56 @@ describe("handleProxy", () => {
     }
   });
 
+  test("fast-mode requests run at standard speed on accounts with fast mode disabled", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const slow = createAccount({ name: "Fast off", priority: 0 });
+    seedAccountCredentials(slow.id, {
+      accessToken: "fast-off-access",
+      refreshToken: "fast-off-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const fast = createAccount({ name: "Fast on", priority: 1 });
+    seedAccountCredentials(fast.id, {
+      accessToken: "fast-on-access",
+      refreshToken: "fast-on-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    updateAccount(slow.id, { fast_mode_disabled: 1 });
+    claimSticky("sid:session-fast-off", slow.id, now);
+    claimSticky("sid:session-fast-on", fast.id, now);
+
+    const { headers, bodies, restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+
+    try {
+      for (const sessionId of ["session-fast-off", "session-fast-on"]) {
+        const response = await handleProxy(
+          new Request("http://cc-lb.test/v1/messages", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "anthropic-beta": "fast-mode-2026-02-01",
+              "x-claude-code-session-id": sessionId,
+            },
+            body: JSON.stringify({ model: "claude-opus-5-5", speed: "fast", messages: [] }),
+          }),
+          new URL("http://cc-lb.test/v1/messages"),
+        );
+        expect(response.status).toBe(200);
+        await response.text();
+      }
+
+      expect(headers[0]?.get("authorization")).toBe("Bearer fast-off-access");
+      expect(decodeBody(bodies[0])).toEqual({ model: "claude-opus-5-5", messages: [] });
+      expect(headers[1]?.get("authorization")).toBe("Bearer fast-on-access");
+      expect(decodeBody(bodies[1])).toEqual({ model: "claude-opus-5-5", speed: "fast", messages: [] });
+    } finally {
+      restore();
+    }
+  });
+
   test("new chats are refused when every available account is draining", async () => {
     const now = Date.now();
     for (const account of listAccounts()) {

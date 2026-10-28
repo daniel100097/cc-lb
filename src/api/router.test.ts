@@ -133,6 +133,19 @@ describe("appRouter accounts", () => {
     expect(open.priority).toBe(7);
   });
 
+  test("update toggles fast mode without changing status", async () => {
+    const account = createAccount({ name: "No fast" });
+    seedAccountCredentials(account.id, { accessToken: "access-f", refreshToken: "refresh-f" });
+    expect((await caller.accounts.list()).find((entry) => entry.id === account.id)?.fastModeDisabled).toBe(false);
+
+    const disabled = await caller.accounts.update({ id: account.id, fastModeDisabled: true });
+    expect(disabled.fastModeDisabled).toBe(true);
+    expect(disabled.status).toBe("active");
+
+    const allowed = await caller.accounts.update({ id: account.id, fastModeDisabled: false });
+    expect(allowed.fastModeDisabled).toBe(false);
+  });
+
   test("update validates, masks, and clears the account egress proxy", async () => {
     const account = createAccount({ name: "Proxy me" });
     seedAccountCredentials(account.id, { accessToken: "access-p", refreshToken: "refresh-p" });

@@ -91,6 +91,7 @@ const accountPatchSchema = z
     paused: z.boolean().optional(),
     pauseReason: z.string().trim().max(300).nullable().optional(),
     draining: z.boolean().optional(),
+    fastModeDisabled: z.boolean().optional(),
     needsReauth: z.boolean().optional(),
     proxyUrl: proxyUrlSchema.optional(),
   })
@@ -245,6 +246,7 @@ export const appRouter = router({
         patch.pause_reason = input.pauseReason;
       }
       if (input.draining !== undefined) patch.draining = input.draining ? 1 : 0;
+      if (input.fastModeDisabled !== undefined) patch.fast_mode_disabled = input.fastModeDisabled ? 1 : 0;
       if (input.needsReauth !== undefined) patch.needs_reauth = input.needsReauth ? 1 : 0;
       if (input.proxyUrl !== undefined) patch.proxy_url = normalizeProxyUrl(input.proxyUrl);
 
@@ -507,6 +509,7 @@ function toPublicAccount(account: Account, now = Date.now()) {
     paused: account.paused === 1,
     pauseReason: account.pause_reason,
     draining: account.draining === 1,
+    fastModeDisabled: account.fast_mode_disabled === 1,
     usage: parseUsageWindows(account.usage_windows),
     usageCheckedAt: account.usage_checked_at,
     hasProxy: account.proxy_url !== null,

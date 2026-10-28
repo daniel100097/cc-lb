@@ -254,6 +254,7 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
       deviceId,
       serverPublicIp: egressIpByAccount?.get(account.id) ?? null,
       sessionId,
+      fastModeDisabled: account.fast_mode_disabled === 1,
       wantsStream: isRecord(parsedBody) && parsedBody.stream === true,
       rawRequest,
     });
@@ -624,6 +625,7 @@ interface AttemptContext {
   deviceId: string | null;
   serverPublicIp: string | null;
   sessionId: string;
+  fastModeDisabled: boolean;
   wantsStream: boolean;
   rawRequest: RawRequestSnapshot | null;
 }
@@ -996,15 +998,32 @@ function hasDuplicateJsonKeys(value: string): boolean {
  * Per-attempt outbound body: synchronize device/account/session identity slots
  * to the pinned account and validated session header. Each slot is rewritten
  * only where direct Claude Code sent it, including metadata.user_id envelopes.
- * The shared bodyBuf stays pristine so account-specific rewriting never
- * mutates the original request.
+ * Accounts with fast mode disabled also lose the top-level `speed` field, so a
+ * fast-mode request runs at standard speed instead. The shared bodyBuf stays
+ * pristine so account-specific rewriting never mutates the original request.
  */
 function buildAttemptBody(
   bodyBuf: ArrayBuffer | null,
   context: AttemptContext,
 ): ArrayBuffer | null {
+  if (!bodyBuf || !isRecord(context.parsedBody)) return bodyBuf;
+  const userId = patchedUserId(context);
+  const stripSpeed = context.fastModeDisabled && "speed" in context.parsedBody && context.parsedBody.speed !== "standard";
+  if (userId === null && !stripSpeed) return bodyBuf;
+
+  const patched = structuredClone(context.parsedBody);
+  if (userId !== null && isRecord(patched.metadata)) patched.metadata.user_id = userId;
+  if (stripSpeed) delete patched.speed;
+  const bytes = new TextEncoder().encode(JSON.stringify(patched));
+  const out = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(out).set(bytes);
+  return out;
+}
+
+/** Re-serialized metadata.user_id envelope for this attempt, or null when unchanged. */
+function patchedUserId(context: AttemptContext): string | null {
   const signals = context.bodySignals;
-  if (!bodyBuf || !signals.userIdEnvelope || !isRecord(context.parsedBody)) return bodyBuf;
+  if (!signals.userIdEnvelope) return null;
   const envelope = structuredClone(signals.userIdEnvelope);
   let changed = false;
   if (signals.hasDeviceId && context.deviceId && envelope.device_id !== context.deviceId) {
@@ -1019,15 +1038,7 @@ function buildAttemptBody(
     envelope.session_id = context.sessionId;
     changed = true;
   }
-  if (!changed) return bodyBuf;
-
-  const patched = structuredClone(context.parsedBody);
-  if (!isRecord(patched.metadata)) return bodyBuf;
-  patched.metadata.user_id = JSON.stringify(envelope);
-  const bytes = new TextEncoder().encode(JSON.stringify(patched));
-  const out = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(out).set(bytes);
-  return out;
+  return changed ? JSON.stringify(envelope) : null;
 }
 
 interface ProxyAuthResult {

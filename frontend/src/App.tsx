@@ -37,6 +37,7 @@ import {
   Sun,
   Trash2,
   Zap,
+  ZapOff,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AccountTerminal } from "@/components/account-terminal";
@@ -500,7 +501,7 @@ function AccountsPage() {
 
   return (
     <div className="animate-fade-in-up flex flex-col gap-6">
-      <PageHeading title="Accounts" description="Manage Claude OAuth accounts, priorities, pause/drain state, and reauth flags." action={<AddAccountDialog />} />
+      <PageHeading title="Accounts" description="Manage Claude OAuth accounts, priorities, pause/drain/fast-mode state, and reauth flags." action={<AddAccountDialog />} />
       <section className="rounded-xl border bg-card p-4">
         <AccountsTable accounts={accounts.data ?? []} />
       </section>
@@ -1227,6 +1228,7 @@ function AccountSummaryCards({ accounts }: { accounts: Account[] }) {
             <div className="flex flex-col items-end gap-1">
               <StatusBadge status={account.status} />
               {account.draining ? <StatusBadge status="draining" /> : null}
+              {account.fastModeDisabled ? <StatusBadge status="fast_off" /> : null}
             </div>
           </div>
           <div className="mt-4 grid gap-3">
@@ -1852,6 +1854,11 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
     toast.success(account.draining ? "Account accepts new sessions again" : "Account draining: no new sessions");
   }
 
+  async function toggleFastMode() {
+    await updateAccount.mutateAsync({ id: account.id, fastModeDisabled: !account.fastModeDisabled });
+    toast.success(account.fastModeDisabled ? "Fast mode allowed" : "Fast mode disabled: requests run at standard speed");
+  }
+
   async function rename() {
     const nextName = window.prompt("Account name", account.name);
     if (!nextName) return;
@@ -1887,6 +1894,7 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
         <div className="flex flex-wrap gap-1">
           <StatusBadge status={account.status} />
           {account.draining ? <StatusBadge status="draining" /> : null}
+          {account.fastModeDisabled ? <StatusBadge status="fast_off" /> : null}
         </div>
       </td>
       <td className="px-2 py-3">
@@ -1924,6 +1932,15 @@ function AccountRow({ account, compact }: { account: Account; compact: boolean }
             title={account.draining ? "Accept new sessions" : "Drain: stop new sessions, keep existing ones"}
           >
             {account.draining ? <DoorOpen className="size-4 text-primary" /> : <DoorClosed className="size-4" />}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={toggleFastMode}
+            title={account.fastModeDisabled ? "Allow fast mode" : "Disable fast mode: run fast requests at standard speed"}
+          >
+            {account.fastModeDisabled ? <Zap className="size-4 text-primary" /> : <ZapOff className="size-4" />}
           </Button>
           <Button type="button" variant="ghost" size="icon" onClick={rename} title="Rename">
             <MoreHorizontal className="size-4" />
