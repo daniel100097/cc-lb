@@ -8,6 +8,7 @@ for (const suffix of ["", "-wal", "-shm"]) {
 process.env.DB_PATH = dbPath;
 
 const {
+  apiKeyBlocksModel,
   createApiKey,
   getApiKey,
   hashApiKeySecret,
@@ -85,5 +86,31 @@ describe("api key repository", () => {
     });
     expect(updated?.status).toBe("inactive");
     expect(updated?.allowed_models).toBeNull();
+  });
+
+  test("stores a model blocklist matching exact ids and trailing wildcards", () => {
+    const created = createApiKey({
+      name: "Blocklist",
+      blocked_models: [" claude-fable-5-2 ", "claude-fable-5-2", "claude-opus-*"],
+    });
+    const apiKey = created.apiKey;
+    expect(apiKey.blocked_models).toEqual(["claude-fable-5-2", "claude-opus-*"]);
+    expect(getApiKey(apiKey.id)?.blocked_models).toEqual(["claude-fable-5-2", "claude-opus-*"]);
+
+    expect(apiKeyBlocksModel(apiKey, "claude-fable-5-2")).toBe(true);
+    expect(apiKeyBlocksModel(apiKey, " Claude-Fable-5-2 ")).toBe(true);
+    // An exact entry is not a prefix: dated variants need a wildcard entry.
+    expect(apiKeyBlocksModel(apiKey, "claude-fable-5-2-20261101")).toBe(false);
+    expect(apiKeyBlocksModel(apiKey, "claude-opus-5-5")).toBe(true);
+    expect(apiKeyBlocksModel(apiKey, "claude-opus-4-8-20260101")).toBe(true);
+    expect(apiKeyBlocksModel(apiKey, "claude-sonnet-5-5")).toBe(false);
+    expect(apiKeyBlocksModel(apiKey, null)).toBe(false);
+
+    // Patches that omit the blocklist leave it alone; an empty list clears it.
+    expect(updateApiKey(apiKey.id, { name: "Renamed" })?.blocked_models).toEqual(["claude-fable-5-2", "claude-opus-*"]);
+    const cleared = updateApiKey(apiKey.id, { blocked_models: [] });
+    expect(cleared?.blocked_models).toEqual([]);
+    expect(cleared && apiKeyBlocksModel(cleared, "claude-fable-5-2")).toBe(false);
+    expect(createApiKey({ name: "No blocklist" }).apiKey.blocked_models).toEqual([]);
   });
 });

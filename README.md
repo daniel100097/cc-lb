@@ -24,7 +24,8 @@ store.
   idle periods.
 - Routing strategies: `priority`, `round_robin`, `noisy_round_robin`,
   `least_used`, `weighted_random`, and `session_reset_drain`.
-- Optional proxy API-key enforcement with account scoping and model filters.
+- Optional proxy API-key enforcement with account scoping and a per-key model
+  blocklist.
 - Dashboard password for the SPA, tRPC API, and account terminals.
 - SQLite persistence with Bun, React, Tailwind, and Docker support.
 
@@ -57,6 +58,12 @@ listens separately on port `8485`.
 
 When API-key auth is enabled in Settings, use a dashboard-generated key as
 `ANTHROPIC_AUTH_TOKEN` instead.
+
+Each key can disable models: on the APIs page, open **Manage** and check the
+models to refuse, or add an entry ending in `*` to match a prefix such as
+`claude-fable-*`. A request for a disabled model gets `403 model_blocked`
+before any account is selected. The blocklist binds only requests that present
+that key, so enable API-key auth to keep clients from omitting it.
 
 ## Docker Compose Example
 

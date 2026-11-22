@@ -118,6 +118,7 @@ type ApiKey = {
   status?: string;
   computedStatus?: string;
   allowedModels?: string[] | null;
+  blockedModels?: string[];
   accountScopeEnabled?: boolean;
   assignedAccountIds?: string[];
   expiresAt?: string | number | null;
@@ -139,6 +140,7 @@ type ApiKeyUpdateInput = {
   id: string;
   name?: string;
   allowedModels?: string[] | null;
+  blockedModels?: string[];
   expiresAt?: number | null;
   isActive?: boolean;
 };
@@ -1367,6 +1369,7 @@ function ApiKeyDetail({
     );
   }
   const accountCosts = usage7d.accountCosts ?? [];
+  const blockedModels = apiKey.blockedModels ?? [];
   return (
     <section className="space-y-4 rounded-xl border bg-card p-5">
       <div className="flex items-start justify-between gap-3">
@@ -1391,6 +1394,14 @@ function ApiKeyDetail({
             <DropdownMenuItem variant="destructive" onClick={() => onDelete(apiKey)}><Trash2 className="size-4" />Delete</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-muted-foreground text-xs">Disabled models</span>
+        {blockedModels.length === 0 ? <span className="text-xs">None</span> : null}
+        {blockedModels.map((model) => (
+          <Badge key={model} variant="secondary" className="font-mono">{model}</Badge>
+        ))}
+        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => onEdit(apiKey)}>Manage</Button>
       </div>
       <div className="grid gap-4 xl:grid-cols-[18rem_minmax(0,1fr)]">
         <DonutChart
@@ -1476,32 +1487,93 @@ function ApiKeyEditDialog({
   onSubmit: (input: ApiKeyUpdateInput) => Promise<unknown>;
 }) {
   const [name, setName] = useState("");
+  const [blockedModels, setBlockedModels] = useState<string[]>([]);
   useEffect(() => {
     setName(apiKey?.name ?? "");
+    setBlockedModels(apiKey?.blockedModels ?? []);
   }, [apiKey]);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!apiKey) return;
-    await onSubmit({ id: apiKey.id, name });
+    await onSubmit({ id: apiKey.id, name, blockedModels });
   }
   return (
     <Dialog open={Boolean(apiKey)} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Edit API key</DialogTitle>
-          <DialogDescription>Update key metadata.</DialogDescription>
+          <DialogDescription>Rename the key or disable models for it.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={submit}>
           <div className="grid gap-2">
             <Label htmlFor="api-key-edit-name">Name</Label>
             <Input id="api-key-edit-name" value={name} onChange={(event) => setName(event.target.value)} required />
           </div>
+          <BlockedModelsField value={blockedModels} onChange={setBlockedModels} />
           <DialogFooter>
             <Button type="submit" disabled={busy || !apiKey}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}Save</Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Per-key model blocklist: models seen in the request log as checkboxes, plus free-form entries. */
+function BlockedModelsField({ value, onChange }: { value: string[]; onChange: (value: string[]) => void }) {
+  const [custom, setCustom] = useState("");
+  const options = trpc.requests.options.useQuery();
+  const settings = trpc.settings.get.useQuery();
+  const models = useMemo(
+    () => Array.from(new Set([...(options.data?.models ?? []), ...value])).sort(),
+    [options.data, value],
+  );
+  function addCustom() {
+    const model = custom.trim();
+    if (model && !value.includes(model)) onChange([...value, model]);
+    setCustom("");
+  }
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor="api-key-blocked-model">Disabled models</Label>
+      <p className="text-muted-foreground text-xs">
+        Requests for a checked model are rejected for this key. End an entry with * to match a prefix, e.g. claude-fable-*.
+      </p>
+      {settings.data && !settings.data.apiKeyAuthEnabled ? (
+        <p className="text-xs text-amber-700 dark:text-amber-300">
+          API Key Auth is off, so clients that send no key are not restricted.
+        </p>
+      ) : null}
+      {models.length > 0 ? (
+        <div className="grid max-h-48 gap-2 overflow-y-auto rounded-md border p-3">
+          {models.map((model) => (
+            <label key={model} className="flex items-center gap-2">
+              <Checkbox
+                checked={value.includes(model)}
+                onCheckedChange={(checked) =>
+                  onChange(checked === true ? [...value, model] : value.filter((item) => item !== model))
+                }
+              />
+              <span className="font-mono text-xs break-all">{model}</span>
+            </label>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex gap-2">
+        <Input
+          id="api-key-blocked-model"
+          value={custom}
+          onChange={(event) => setCustom(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            addCustom();
+          }}
+          placeholder="Other model ID or prefix*"
+        />
+        <Button type="button" variant="outline" disabled={custom.trim().length === 0} onClick={addCustom}>Add</Button>
+      </div>
+    </div>
   );
 }
 

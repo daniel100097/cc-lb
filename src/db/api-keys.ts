@@ -14,6 +14,7 @@ export interface ApiKey {
   computed_status: ApiKeyComputedStatus;
   expires_at: number | null;
   allowed_models: string[] | null;
+  blocked_models: string[];
   traffic_class: string;
   account_scope_enabled: number;
   assigned_account_ids: string[];
@@ -27,6 +28,7 @@ export interface NewApiKey {
   status?: ApiKeyStatus;
   expires_at?: number | null;
   allowed_models?: string[] | null;
+  blocked_models?: string[];
   traffic_class?: string;
   account_scope_enabled?: number;
   assigned_account_ids?: string[];
@@ -37,6 +39,7 @@ export interface ApiKeyPatch {
   status?: ApiKeyStatus;
   expires_at?: number | null;
   allowed_models?: string[] | null;
+  blocked_models?: string[];
   traffic_class?: string;
   account_scope_enabled?: number;
   assigned_account_ids?: string[];
@@ -81,6 +84,7 @@ export function createApiKey(input: NewApiKey, now = Date.now()): ApiKeyWithPlai
       status: input.status ?? "active",
       expiresAt: input.expires_at ?? null,
       allowedModels: encodeNullableStringArray(input.allowed_models ?? null),
+      blockedModels: encodeStringArray(input.blocked_models ?? []),
       trafficClass: normalizeTrafficClass(input.traffic_class),
       accountScopeEnabled: input.account_scope_enabled ?? 0,
       assignedAccountIds: encodeStringArray(input.assigned_account_ids ?? []),
@@ -101,6 +105,7 @@ export function updateApiKey(id: string, patch: ApiKeyPatch, now = Date.now()): 
   if (patch.status !== undefined) values.status = patch.status;
   if (patch.expires_at !== undefined) values.expiresAt = patch.expires_at;
   if (patch.allowed_models !== undefined) values.allowedModels = encodeNullableStringArray(patch.allowed_models);
+  if (patch.blocked_models !== undefined) values.blockedModels = encodeStringArray(patch.blocked_models);
   if (patch.traffic_class !== undefined) values.trafficClass = normalizeTrafficClass(patch.traffic_class);
   if (patch.account_scope_enabled !== undefined) values.accountScopeEnabled = patch.account_scope_enabled;
   if (patch.assigned_account_ids !== undefined) {
@@ -155,6 +160,20 @@ export function touchApiKeyLastUsed(id: string, now = Date.now()): void {
   orm.update(apiKeysTable).set({ lastUsedAt: now }).where(eq(apiKeysTable.id, id)).run();
 }
 
+/**
+ * True when the key's blocklist names the requested model. Entries match the
+ * whole model id case-insensitively; a trailing `*` matches any id with that
+ * prefix, so `claude-fable-*` also covers dated variants.
+ */
+export function apiKeyBlocksModel(apiKey: ApiKey, model: string | null): boolean {
+  const requested = model?.trim().toLowerCase();
+  if (!requested) return false;
+  return apiKey.blocked_models.some((entry) => {
+    const pattern = entry.toLowerCase();
+    return pattern.endsWith("*") ? requested.startsWith(pattern.slice(0, -1)) : requested === pattern;
+  });
+}
+
 export function hashApiKeySecret(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
 }
@@ -177,6 +196,7 @@ function toApiKey(row: ApiKeyRow, now: number): ApiKey {
     computed_status: computedStatus(status, row.expiresAt, now),
     expires_at: row.expiresAt,
     allowed_models: decodeNullableStringArray(row.allowedModels),
+    blocked_models: decodeStringArray(row.blockedModels),
     traffic_class: row.trafficClass,
     account_scope_enabled: row.accountScopeEnabled,
     assigned_account_ids: decodeStringArray(row.assignedAccountIds),
@@ -231,6 +251,7 @@ interface ApiKeyUpdateValues {
   status?: ApiKeyStatus;
   expiresAt?: number | null;
   allowedModels?: string | null;
+  blockedModels?: string;
   trafficClass?: string;
   accountScopeEnabled?: number;
   assignedAccountIds?: string;

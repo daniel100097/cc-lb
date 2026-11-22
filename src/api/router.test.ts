@@ -288,6 +288,23 @@ describe("appRouter requests", () => {
   });
 });
 
+describe("appRouter api keys", () => {
+  test("creates and updates a key's model blocklist", async () => {
+    const created = await caller.apiKeys.create({ name: "Router blocklist", blockedModels: ["claude-fable-5-2"] });
+    expect(created.apiKey.blockedModels).toEqual(["claude-fable-5-2"]);
+
+    const id = created.apiKey.id;
+    const updated = await caller.apiKeys.update({ id, blockedModels: ["claude-opus-*", " claude-fable-5-2 "] });
+    expect(updated.blockedModels).toEqual(["claude-opus-*", "claude-fable-5-2"]);
+    expect((await caller.apiKeys.update({ id, name: "Renamed" })).blockedModels).toEqual(updated.blockedModels);
+    expect((await caller.apiKeys.list()).find((apiKey) => apiKey.id === id)?.blockedModels).toEqual(updated.blockedModels);
+
+    expect((await caller.apiKeys.update({ id, blockedModels: [] })).blockedModels).toEqual([]);
+    expect((await caller.apiKeys.create({ name: "Router no blocklist" })).apiKey.blockedModels).toEqual([]);
+    await expect(caller.apiKeys.update({ id, blockedModels: [""] })).rejects.toThrow();
+  });
+});
+
 describe("appRouter settings", () => {
   test("updates raw HTTP logging setting", async () => {
     const updated = await caller.settings.update({ rawHttpLoggingEnabled: true });

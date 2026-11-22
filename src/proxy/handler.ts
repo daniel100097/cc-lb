@@ -11,7 +11,7 @@ import { getValidAccessToken } from "../anthropic/token-manager";
 import { isStrategyName, selectAccount } from "../balancer/strategies";
 import { isAvailable, toState, type AccountState, type StrategyName } from "../balancer/types";
 import { bumpRequestCount, listAccounts, updateAccount, type Account } from "../db/accounts";
-import { validateApiKeySecret, type ApiKey } from "../db/api-keys";
+import { apiKeyBlocksModel, validateApiKeySecret, type ApiKey } from "../db/api-keys";
 import { getSettings, type Settings } from "../db/settings";
 import { maskProxyUrl, proxyFetchInit } from "../egress-proxy";
 import { resolveEgressPublicIp } from "../server-public-ip";
@@ -141,6 +141,9 @@ export async function handleProxy(req: Request, url: URL): Promise<Response> {
   }
 
   const model = modelFromBody(parsedBody);
+  // Checked before any account or sticky work so a refused request never
+  // claims a session home.
+  if (proxyAuth.apiKey && apiKeyBlocksModel(proxyAuth.apiKey, model)) return modelBlocked(model);
   let accounts = listAccounts();
   if (proxyAuth.apiKey?.account_scope_enabled === 1) {
     const assigned = new Set(proxyAuth.apiKey.assigned_account_ids);
@@ -1338,6 +1341,16 @@ function proxyAuthError(status: 401 | 403, error: string, message: string): Resp
   const headers: Record<string, string> = {};
   if (status === 401) headers["www-authenticate"] = "Bearer";
   return Response.json({ error, message }, { status, headers });
+}
+
+function modelBlocked(model: string | null): Response {
+  return Response.json(
+    {
+      error: "model_blocked",
+      message: `Model ${model} is disabled for this API key.`,
+    },
+    { status: 403 },
+  );
 }
 
 function claudeCodeRequired(): Response {

@@ -11,6 +11,7 @@ const accountsDir = `/tmp/cc-lb-proxy-accounts-${process.pid}`;
 process.env.CLAUDE_ACCOUNTS_DIR = accountsDir;
 
 const { createAccount, getAccount, listAccounts, updateAccount } = await import("../db/accounts");
+const { createApiKey } = await import("../db/api-keys");
 const { installedClaudeVersion } = await import("../anthropic/claude-version");
 const { CLIENT_IP_HEADER, DEVICE_ID_HEADER } = await import("../anthropic/headers");
 const { listRequests } = await import("../db/request-log");
@@ -1193,6 +1194,63 @@ describe("handleProxy", () => {
       expect(decodeBody(bodies[0])).toEqual({ model: "claude-opus-5-5", messages: [] });
       expect(headers[1]?.get("authorization")).toBe("Bearer fast-on-access");
       expect(decodeBody(bodies[1])).toEqual({ model: "claude-opus-5-5", speed: "fast", messages: [] });
+    } finally {
+      restore();
+    }
+  });
+
+  test("rejects models on the API key's blocklist before any account or session work", async () => {
+    const now = Date.now();
+    for (const account of listAccounts()) {
+      updateAccount(account.id, { paused: 1 });
+    }
+    const home = createAccount({ name: "Blocklist home", priority: 0 });
+    seedAccountCredentials(home.id, {
+      accessToken: "blocklist-access",
+      refreshToken: "blocklist-refresh",
+      expiresAt: now + 3_600_000,
+    });
+    const blocking = createApiKey({ name: "Blocks fable", blocked_models: ["claude-fable-*"] });
+    const open = createApiKey({ name: "Blocks nothing" });
+    const { headers, bodies, restore } = captureFetch(() => Response.json({ usage: { input_tokens: 1, output_tokens: 2 } }));
+    const send = (secret: string, sessionId: string, path: string, model: string) =>
+      handleProxy(
+        new Request(`http://cc-lb.test${path}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${secret}`,
+            "x-claude-code-session-id": sessionId,
+          },
+          body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }),
+        }),
+        new URL(`http://cc-lb.test${path}`),
+      );
+
+    try {
+      for (const path of ["/v1/messages", "/v1/messages/count_tokens"]) {
+        const blocked = await send(blocking.plaintextKey, "blocklist-refused", path, "Claude-Fable-5-2");
+        expect(blocked.status).toBe(403);
+        expect(await blocked.json()).toEqual({
+          error: "model_blocked",
+          message: "Model Claude-Fable-5-2 is disabled for this API key.",
+        });
+      }
+      expect(bodies).toHaveLength(0);
+      expect(getSticky("sid:blocklist-refused")).toBeNull();
+      expect(listRequests({ limit: 10, offset: 0, model: "Claude-Fable-5-2" }).total).toBe(0);
+
+      // The same key may use other models, and other keys may use this one.
+      const otherModel = await send(blocking.plaintextKey, "blocklist-other-model", "/v1/messages", "claude-opus-5-5");
+      expect(otherModel.status).toBe(200);
+      await otherModel.text();
+      const otherKey = await send(open.plaintextKey, "blocklist-other-key", "/v1/messages", "claude-fable-5-2");
+      expect(otherKey.status).toBe(200);
+      await otherKey.text();
+
+      expect(bodies.map((body) => decodeBody(body).model)).toEqual(["claude-opus-5-5", "claude-fable-5-2"]);
+      expect(headers.every((entry) => entry.get("authorization") === "Bearer blocklist-access")).toBe(true);
+      expect(getSticky("sid:blocklist-other-model")).not.toBeNull();
     } finally {
       restore();
     }

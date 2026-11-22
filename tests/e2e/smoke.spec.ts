@@ -1,4 +1,5 @@
 import { type BrowserContext, expect, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
 
 test.describe.configure({ mode: "serial" });
 
@@ -162,6 +163,67 @@ test.describe("cc-lb dashboard with seeded data", () => {
 
     await expect(page.getByText("Blocked 1 chat sessions")).toBeVisible();
     await expect(row.getByText("Blocked", { exact: true }).first()).toBeVisible();
+  });
+
+  test("disables models for an API key and refuses them at the proxy", async ({ page }) => {
+    await page.goto("/apis");
+
+    await page.getByRole("button", { name: "Create Key" }).click();
+    const createDialog = page.getByRole("dialog", { name: "Create API key" });
+    await createDialog.getByLabel("Name").fill("Blocklist E2E");
+    await createDialog.getByRole("button", { name: "Create", exact: true }).click();
+    const createdDialog = page.getByRole("dialog", { name: "API key created" });
+    const secret = (await createdDialog.getByText(/^sk-cclb_/).innerText()).trim();
+    await page.keyboard.press("Escape");
+    await expect(page.getByText("Disabled models", { exact: true })).toBeVisible();
+    await expect(page.getByText("None", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Manage" }).click();
+    const editDialog = page.getByRole("dialog", { name: "Edit API key" });
+    // Models already seen in the request log are offered as checkboxes.
+    await editDialog.getByRole("checkbox", { name: "claude-sonnet-e2e" }).click();
+    await editDialog.getByLabel("Disabled models").fill("claude-fable-*");
+    await editDialog.getByLabel("Disabled models").press("Enter");
+    await expect(editDialog.getByRole("checkbox", { name: "claude-fable-*" })).toBeChecked();
+    await expect(editDialog.getByRole("checkbox", { name: "claude-haiku-e2e" })).not.toBeChecked();
+    await editDialog.getByRole("button", { name: "Save" }).click();
+
+    await expect(page.getByText("API key updated")).toBeVisible();
+    await expect(editDialog).toBeHidden();
+    await expect(page.getByText("claude-sonnet-e2e", { exact: true })).toBeVisible();
+    await expect(page.getByText("claude-fable-*", { exact: true })).toBeVisible();
+
+    const claudeVersion: unknown = JSON.parse(
+      readFileSync("node_modules/@anthropic-ai/claude-code/package.json", "utf8"),
+    ).version;
+    const send = (model: string) =>
+      fetch(`${proxyBaseUrl()}/v1/messages`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${secret}`,
+          "content-type": "application/json",
+          "user-agent": `claude-cli/${String(claudeVersion)} (external, cli)`,
+          "x-claude-code-session-id": "e2e-blocklist",
+        },
+        body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }),
+      });
+    for (const model of ["claude-sonnet-e2e", "claude-fable-5-2"]) {
+      const blocked = await send(model);
+      expect(blocked.status).toBe(403);
+      await expect(blocked.json()).resolves.toEqual({
+        error: "model_blocked",
+        message: `Model ${model} is disabled for this API key.`,
+      });
+    }
+
+    // Unchecking a model in the dialog lifts the block again.
+    await page.getByRole("button", { name: "Manage" }).click();
+    await editDialog.getByRole("checkbox", { name: "claude-sonnet-e2e" }).click();
+    await editDialog.getByRole("button", { name: "Save" }).click();
+    await expect(editDialog).toBeHidden();
+    await expect(page.getByText("claude-sonnet-e2e", { exact: true })).toBeHidden();
+    const unblocked = await send("claude-sonnet-e2e");
+    expect((await unblocked.json()).error).not.toBe("model_blocked");
   });
 
   test("saves routing settings", async ({ page }) => {

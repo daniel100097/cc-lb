@@ -55,6 +55,8 @@ export const apiKeys = sqliteTable(
     status: text("status").notNull().default("active"),
     expiresAt: integer("expires_at"),
     allowedModels: text("allowed_models"),
+    /** Models this key may not request; a trailing `*` matches a prefix. */
+    blockedModels: text("blocked_models"),
     trafficClass: text("traffic_class").notNull().default("default"),
     accountScopeEnabled: integer("account_scope_enabled").notNull().default(0),
     assignedAccountIds: text("assigned_account_ids"),
