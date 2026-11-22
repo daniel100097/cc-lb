@@ -104,11 +104,13 @@ async function runCase(scenario: Scenario, route: Route) {
       const url = new URL(request.url);
       const response = proxy && url.hostname === "api.anthropic.com" && url.pathname.startsWith("/v1/")
         ? await proxy(request, url) : await fake.fetch(request);
+      // Snapshot now: once Bun has sent a streamed response its headers read back empty.
+      const responseHeaders = Object.fromEntries(response.headers);
       captures.push(response.clone().text().then(responseBody => {
         const exchange = {
           timestamp, method: request.method, url: request.url,
           requestHeaders: Object.fromEntries(request.headers), requestBody: body,
-          responseStatus: response.status, responseHeaders: Object.fromEntries(response.headers), responseBody,
+          responseStatus: response.status, responseHeaders, responseBody,
         };
         incoming.push(exchange);
         appendFileSync(join(output, "client.jsonl"), `${JSON.stringify(exchange)}\n`);
